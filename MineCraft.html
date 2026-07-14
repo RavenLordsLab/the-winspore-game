@@ -785,6 +785,8 @@ window.addEventListener('resize', () => {
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
+  // On-screen touch pad for phones (uses the same mapping as the controller loop).
+  if (window.setupTouchControls) window.setupTouchControls(mapping);
 })();
 </script>
 </body>

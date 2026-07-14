@@ -17,8 +17,10 @@ Share that link — it works on any mobile phone browser.
 All games are single-file HTML. Some use the shared `gamepad.js` for NC300 wireless
 gamepad support; a few 3D games load `three.js` from a CDN.
 
-> Note: several games were built for keyboard/gamepad and don't yet have touch
-> controls, so they load on phones but play best with a physical controller.
+> Mobile: on phones/tablets an on-screen touch pad appears automatically. It's
+> built from each game's own key mapping by `gamepad.js`, so the same buttons that
+> work with a controller work by touch. Add `?touch=1` to a game's URL to preview
+> the pad on a desktop, or `?touch=0` to hide it.
 
 ## Enable GitHub Pages
 

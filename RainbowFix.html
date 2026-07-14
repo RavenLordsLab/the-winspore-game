@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Fix the Rainbow!</title>
 <style>
   body {
@@ -50,6 +51,7 @@
   .band:hover { transform: translateX(4px); }
   .band.dragging { opacity: 0.4; cursor: grabbing; }
   .band.over { box-shadow: 0 0 0 3px #fff inset; }
+  .band.selected { box-shadow: 0 0 0 3px #fff inset, 0 0 14px rgba(255,255,255,0.7); transform: translateX(4px) scale(1.02); }
   .band .grip { opacity: 0.5; font-size: 1.2em; }
   .band.correct {
     box-shadow: 0 0 0 3px #00ff88 inset, 0 2px 6px rgba(0,0,0,0.3);
@@ -83,7 +85,7 @@
 </head>
 <body>
   <h1>Fix the Rainbow!</h1>
-  <p class="instructions">Drag the colors into the correct rainbow order (red &rarr; violet).</p>
+  <p class="instructions">Put the colors in rainbow order (red &rarr; violet). Drag them, or tap one then tap where it should go.</p>
   <div id="rainbow"></div>
   <div id="controls">
     <button onclick="shuffle()">Shuffle</button>
@@ -108,9 +110,22 @@ const COLORS = [
 
 let order = [];
 let moves = 0;
+let selectedPos = null;   // for tap-to-select-then-tap-to-place (touch friendly)
 const container = document.getElementById('rainbow');
 const status = document.getElementById('status');
 const movesEl = document.getElementById('moves');
+
+// Move the band at `from` to position `to` (shared by drag-drop and tap).
+function moveBand(from, to) {
+  if (from === to || from == null || to == null) return;
+  const [moved] = order.splice(from, 1);
+  order.splice(to, 0, moved);
+  moves++;
+  movesEl.textContent = `Moves: ${moves}`;
+  status.textContent = '';
+  status.className = '';
+  render();
+}
 
 function render() {
   container.innerHTML = '';
@@ -124,6 +139,22 @@ function render() {
     div.style.color = (idx === 7 || idx === 4) ? '#fff' : '#111';
     div.innerHTML = `<span>${c.name}</span><span class="grip">&#9776;</span>`;
     if (idx === pos) div.classList.add('correct');
+    if (selectedPos === pos) div.classList.add('selected');
+
+    // Tap-to-move: first tap selects a band, second tap drops it into place.
+    div.addEventListener('click', () => {
+      if (selectedPos === null) {
+        selectedPos = pos;
+        render();
+      } else if (selectedPos === pos) {
+        selectedPos = null;          // tap again to cancel
+        render();
+      } else {
+        const from = selectedPos;
+        selectedPos = null;
+        moveBand(from, pos);
+      }
+    });
 
     div.addEventListener('dragstart', e => {
       div.classList.add('dragging');
@@ -135,22 +166,15 @@ function render() {
     div.addEventListener('drop', e => {
       e.preventDefault();
       div.classList.remove('over');
-      const from = parseInt(e.dataTransfer.getData('text/plain'));
-      const to = pos;
-      if (from === to) return;
-      const [moved] = order.splice(from, 1);
-      order.splice(to, 0, moved);
-      moves++;
-      movesEl.textContent = `Moves: ${moves}`;
-      status.textContent = '';
-      status.className = '';
-      render();
+      selectedPos = null;
+      moveBand(parseInt(e.dataTransfer.getData('text/plain')), pos);
     });
     container.appendChild(div);
   });
 }
 
 function shuffle() {
+  selectedPos = null;
   order = COLORS.map((_, i) => i);
   do {
     for (let i = order.length - 1; i > 0; i--) {

@@ -160,6 +160,199 @@
     } catch (e) {}
   }
 
-  window.setupGamepad = setupGamepad;
+  // ---------------------------------------------------------------------------
+  // On-screen TOUCH CONTROLS for phones/tablets.
+  //
+  // Reuses the exact same dispatchKey/toKeyPair path as the gamepad poller, so
+  // any game that already "works with a controller" also works with the on-screen
+  // pad — no per-game changes needed. Driven by the same player mapping that a
+  // game passes to setupGamepad().
+  // ---------------------------------------------------------------------------
+
+  const IS_TOUCH = (typeof window !== 'undefined') &&
+    (('ontouchstart' in window) || (navigator.maxTouchPoints > 0));
+  // ?touch=1 forces the pad on (handy for testing on a desktop); ?touch=0 hides it.
+  function touchForced() {
+    try {
+      const q = new URLSearchParams(location.search).get('touch');
+      if (q === '1') return true;
+      if (q === '0') return 'off';
+    } catch (e) {}
+    return null;
+  }
+
+  function onReady(fn) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', fn, { once: true });
+    } else {
+      fn();
+    }
+  }
+
+  // Add a viewport meta + light responsive CSS so fixed-size canvases fit a phone
+  // screen and the page doesn't double-tap-zoom or scroll under the controls.
+  let chromeInjected = false;
+  function injectMobileChrome() {
+    if (chromeInjected) return;
+    chromeInjected = true;
+    if (!document.querySelector('meta[name="viewport"]')) {
+      const m = document.createElement('meta');
+      m.name = 'viewport';
+      m.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
+      (document.head || document.documentElement).appendChild(m);
+    }
+    const style = document.createElement('style');
+    style.setAttribute('data-gp-mobile', '');
+    style.textContent = `
+      html, body { max-width: 100%; overflow-x: hidden; touch-action: manipulation; }
+      canvas { max-width: 100%; height: auto; }
+      /* On-screen controller */
+      #gp-touch { position: fixed; inset: 0; z-index: 2147483000; pointer-events: none;
+        -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+      #gp-touch .gp-cluster { position: absolute; bottom: max(16px, env(safe-area-inset-bottom));
+        display: grid; pointer-events: none; }
+      #gp-touch .gp-dpad { left: max(12px, env(safe-area-inset-left));
+        grid-template-columns: repeat(3, 58px); grid-template-rows: repeat(3, 58px); gap: 4px; }
+      #gp-touch .gp-actions { right: max(12px, env(safe-area-inset-right));
+        grid-auto-flow: row dense; grid-template-columns: repeat(2, 68px); gap: 10px; align-items: end; }
+      #gp-touch .gp-btn { pointer-events: auto; display: flex; align-items: center; justify-content: center;
+        font: 600 18px/1 system-ui, sans-serif; color: #fff; background: rgba(30,34,54,0.55);
+        border: 1.5px solid rgba(255,255,255,0.35); border-radius: 14px; backdrop-filter: blur(2px);
+        touch-action: none; -webkit-tap-highlight-color: transparent; }
+      #gp-touch .gp-btn:active { background: rgba(108,140,255,0.75); transform: scale(0.94); }
+      #gp-touch .gp-dpad .gp-btn { width: 58px; height: 58px; border-radius: 12px; font-size: 22px; }
+      #gp-touch .gp-actions .gp-btn { width: 68px; height: 68px; border-radius: 50%; font-size: 20px; }
+      #gp-touch .gp-slot-empty { visibility: hidden; }
+      #gp-touch .gp-start { position: absolute; top: max(10px, env(safe-area-inset-top));
+        right: max(10px, env(safe-area-inset-right)); width: auto; height: 40px; padding: 0 16px;
+        border-radius: 20px; font-size: 15px; }
+      @media (min-height: 560px) and (orientation: portrait) {
+        #gp-touch .gp-dpad { grid-template-columns: repeat(3, 64px); grid-template-rows: repeat(3, 64px); }
+        #gp-touch .gp-dpad .gp-btn { width: 64px; height: 64px; }
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  const DIR_GLYPH = { up: '▲', down: '▼', left: '◀', right: '▶' };
+  // Grid positions in the 3x3 dpad (row/col, 1-indexed).
+  const DPAD_POS = {
+    up:    'grid-row:1;grid-column:2',
+    left:  'grid-row:2;grid-column:1',
+    right: 'grid-row:2;grid-column:3',
+    down:  'grid-row:3;grid-column:2',
+  };
+
+  let touchBuilt = false;
+
+  // Make an element fire keydown on press and keyup on release for a given token.
+  function bindButton(el, token) {
+    const pair = toKeyPair(token);
+    if (!pair) return;
+    let down = false;
+    const press = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      if (down) return;
+      down = true;
+      dispatchKey('keydown', pair);
+    };
+    const release = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      if (!down) return;
+      down = false;
+      dispatchKey('keyup', pair);
+    };
+    el.addEventListener('pointerdown', press);
+    el.addEventListener('pointerup', release);
+    el.addEventListener('pointercancel', release);
+    el.addEventListener('pointerleave', release);
+    // Safety: release if the pointer is lifted anywhere.
+    window.addEventListener('pointerup', release);
+    // Prevent the browser turning a long-press into a context menu / selection.
+    el.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  function makeBtn(label, cls, styleText) {
+    const b = document.createElement('div');
+    b.className = 'gp-btn' + (cls ? ' ' + cls : '');
+    b.textContent = label;
+    if (styleText) b.style.cssText = styleText;
+    return b;
+  }
+
+  // Build the on-screen pad from a player mapping (same shape passed to setupGamepad).
+  function setupTouchControls(mapping, opts) {
+    opts = opts || {};
+    const forced = touchForced();
+    if (forced === 'off') return;
+    if (!IS_TOUCH && forced !== true) return;   // desktop: skip unless ?touch=1
+    if (touchBuilt) return;                      // one pad per page
+    if (!mapping) return;
+    touchBuilt = true;
+
+    onReady(() => {
+      injectMobileChrome();
+
+      const root = document.createElement('div');
+      root.id = 'gp-touch';
+
+      // --- D-pad (only the directions this game actually uses) ---
+      const dirs = ['up', 'down', 'left', 'right'].filter(d => mapping[d]);
+      if (dirs.length) {
+        const dpad = document.createElement('div');
+        dpad.className = 'gp-cluster gp-dpad';
+        for (const d of dirs) {
+          const b = makeBtn(DIR_GLYPH[d], null, DPAD_POS[d]);
+          bindButton(b, mapping[d]);
+          dpad.appendChild(b);
+        }
+        root.appendChild(dpad);
+      }
+
+      // --- Action buttons: unique keys among a/b/x/y (dedup shared bindings) ---
+      const actionOrder = ['a', 'b', 'x', 'y', 'lb', 'rb'];
+      const seen = new Set();
+      const actions = [];
+      for (const slot of actionOrder) {
+        const tok = mapping[slot];
+        if (!tok || seen.has(tok)) continue;
+        seen.add(tok);
+        actions.push({ slot, tok });
+        if (actions.length >= 4) break;
+      }
+      if (actions.length) {
+        const pad = document.createElement('div');
+        pad.className = 'gp-cluster gp-actions';
+        for (const { slot, tok } of actions) {
+          const b = makeBtn(slot.toUpperCase(), null, null);
+          bindButton(b, tok);
+          pad.appendChild(b);
+        }
+        root.appendChild(pad);
+      }
+
+      // --- Start / pause button (top-right) ---
+      const startTok = mapping.start || mapping.back;
+      if (startTok) {
+        const s = makeBtn('❚❚', 'gp-start', null);
+        bindButton(s, startTok);
+        root.appendChild(s);
+      }
+
+      document.body.appendChild(root);
+    });
+  }
+
+  // Wrap setupGamepad so any game that configures a controller also gets the
+  // on-screen pad automatically, built from player 1's mapping.
+  const _setupGamepad = setupGamepad;
+  function setupGamepadWithTouch(config) {
+    _setupGamepad(config);
+    const players = (config && config.players) || [];
+    if (players[0]) setupTouchControls(players[0], { config });
+  }
+
+  window.setupGamepad = setupGamepadWithTouch;
+  window.setupTouchControls = setupTouchControls;
   window.gamepadRumble = gamepadRumble;
 })();
