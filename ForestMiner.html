@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Forest to Minecraft — Mom, Dad & You</title>
+<style>
+  body { margin:0; background:#0b1418; color:#fff; font-family:system-ui, sans-serif;
+         display:flex; flex-direction:column; align-items:center; padding:8px; user-select:none; }
+  h1 { margin:6px; color:#8fe06a; text-shadow:2px 2px 0 #000; font-size:22px; text-align:center; }
+  #hud { font-size:18px; margin:4px; min-height:24px; }
+  #status { font-size:15px; margin:2px; min-height:20px; color:#dff; text-align:center; }
+  canvas { background:#7ec0ee; border:4px solid #5a3a1a; box-shadow:0 0 18px #000; }
+  .row { margin:6px; }
+  button { background:#8fe06a; color:#0b1418; border:0; padding:9px 16px; font-weight:bold;
+           font-size:15px; border-radius:6px; cursor:pointer; margin:0 4px; }
+  #legend { font-size:12px; color:#9bb; max-width:640px; text-align:center; margin-top:4px; line-height:1.5; }
+</style>
+</head>
+<body>
+<h1>🌲 Forest to Minecraft — Mom, Dad & You ⛏️</h1>
+<div id="hud"></div>
+<div id="status"></div>
+<canvas id="game" width="820" height="480"></canvas>
+<div class="row">
+  <button id="startBtn">START (or press Space)</button>
+</div>
+<div id="legend">
+  <b>Walk right</b> with Arrow keys / WASD / the controller. <b>Up = jump.</b> 🍎 grab apples in the forest.<br>
+  In Minecraft, walk up to a block and press <b>Space (or the controller button) to mine it</b>. Dig through the walls and find the 💎 diamond to win!
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const hudEl = document.getElementById('hud');
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+
+const CW = canvas.width, CH = canvas.height;
+const GROUND = 400;          // top of the ground (player walks here)
+const BS = 40;               // block size
+const WORLD_W = 3900;        // total level width
+const MINE_X = 1800;         // forest -> minecraft transition
+
+let state, camX, player, mom, dad, apples, score, blocks, inv, mineCool, won;
+
+function key(cx,cy){ return cx+','+cy; }
+
+function buildBlocks(){
+  const b = new Map();
+  const groundRow = Math.floor(GROUND/BS); // top row sitting on ground = groundRow-1 ... up
+  // Helper: a wall column of blocks standing on the ground, `h` blocks tall.
+  function wall(x, h, type){
+    const cx = Math.floor(x/BS);
+    for (let i=0;i<h;i++){
+      const cy = groundRow - 1 - i;
+      b.set(key(cx,cy), {type, hp: type==='stone'?2:1});
+    }
+  }
+  // Several walls to dig through (gets a little tougher to the right)
+  wall(2050, 3, 'dirt');
+  wall(2350, 3, 'dirt');
+  wall(2350+BS, 2, 'stone');
+  wall(2700, 3, 'stone');
+  wall(2740, 3, 'dirt');
+  wall(3050, 3, 'stone');
+  wall(3090, 3, 'stone');
+  wall(3130, 2, 'dirt');
+  // Diamond vault at the end
+  wall(3450, 3, 'stone');
+  wall(3490, 3, 'dirt');
+  const cx = Math.floor(3470/BS), gr = Math.floor(GROUND/BS);
+  b.set(key(cx, gr-1), {type:'diamond', hp:2}); // the prize, low so it's reachable
+  return b;
+}
+
+function reset(){
+  camX = 0; score = 0; won = false; mineCool = 0;
+  player = {x:80, y:GROUND-52, w:30, h:52, vy:0, onGround:true, face:1};
+  mom = {x:20, y:GROUND-50, face:1};
+  dad = {x:-30, y:GROUND-50, face:1};
+  apples = [];
+  for (let i=0;i<10;i++) apples.push({x:300+i*150, y:GROUND-60-((i*37)%80), got:false});
+  blocks = buildBlocks();
+  inv = {dirt:0, stone:0, diamond:0};
+}
+
+// ---------- input ----------
+const keys = {};
+addEventListener('keydown', e=>{
+  const k = e.key.toLowerCase();
+  if ((k===' '||k==='enter') && state!=='play'){ start(); e.preventDefault(); return; }
+  if (k===' ') mine();
+  keys[k] = true;
+  if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k)) e.preventDefault();
+});
+addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+// ---------- block helpers ----------
+function solidAt(wx, wy){
+  const cx = Math.floor(wx/BS), cy = Math.floor(wy/BS);
+  return blocks.has(key(cx,cy));
+}
+function blockedRect(x,y,w,h){
+  // sample the player's body for any solid block
+  const pts = [[x,y],[x+w,y],[x,y+h],[x+w,y+h],[x+w/2,y+h/2],[x+w/2,y],[x+w/2,y+h]];
+  for (const [px,py] of pts) if (solidAt(px,py)) return true;
+  return false;
+}
+
+function mine(){
+  if (state!=='play' || mineCool>0) return;
+  // target the block right in front of the player at chest height
+  const tx = player.x + player.w/2 + player.face*22;
+  const ty = player.y + player.h*0.55;
+  const cx = Math.floor(tx/BS), cy = Math.floor(ty/BS);
+  const k = key(cx,cy);
+  let blk = blocks.get(k);
+  // if nothing at chest height, try one row down (the block at your feet)
+  if (!blk){ blk = blocks.get(key(cx, cy+1)); }
+  if (!blk) return;
+  mineCool = 12;
+  blk.hp--;
+  if (blk.hp<=0){
+    // remove whichever key we actually hit
+    if (blocks.get(k) && blocks.get(k).hp<=0) blocks.delete(k);
+    else blocks.delete(key(cx,cy+1));
+    if (blk.type==='diamond'){
+      inv.diamond++; won=true; state='win';
+      statusEl.textContent='💎 YOU MINED THE DIAMOND! YOU WIN! ⛏️✨  Press Space to play again.';
+    } else {
+      inv[blk.type]++;
+      statusEl.textContent='Mined '+blk.type+'! ('+inv[blk.type]+')';
+    }
+  }
+}
+
+// ---------- update ----------
+function update(){
+  if (state!=='play') return;
+  if (mineCool>0) mineCool--;
+
+  const left  = keys['arrowleft']||keys['a'];
+  const right = keys['arrowright']||keys['d'];
+  const jump  = keys['arrowup']||keys['w'];
+
+  let vx = 0;
+  if (left){ vx=-3.4; player.face=-1; }
+  if (right){ vx=3.4; player.face=1; }
+
+  // horizontal move with block collision
+  let nx = player.x + vx;
+  nx = Math.max(0, Math.min(WORLD_W-player.w, nx));
+  if (!blockedRect(nx, player.y, player.w, player.h)) player.x = nx;
+
+  // gravity + jump
+  if (jump && player.onGround){ player.vy = -10.5; player.onGround=false; }
+  player.vy += 0.55;
+  let ny = player.y + player.vy;
+  // land on the flat ground
+  if (ny + player.h >= GROUND){ ny = GROUND - player.h; player.vy=0; player.onGround=true; }
+  // vertical block collision (stand on top of blocks)
+  if (player.vy>=0 && blockedRect(player.x, ny, player.w, player.h)){
+    // step up to sit on the block
+    const cy = Math.floor((ny+player.h)/BS);
+    ny = cy*BS - player.h;
+    player.vy=0; player.onGround=true;
+  } else if (player.vy<0 && blockedRect(player.x, ny, player.w, player.h)){
+    ny = player.y; player.vy=0;
+  }
+  player.y = ny;
+
+  // apples
+  for (const a of apples){
+    if (!a.got && Math.abs((player.x+player.w/2)-a.x)<26 && Math.abs((player.y+25)-a.y)<40){
+      a.got=true; score++; statusEl.textContent='🍎 Yum! Apples: '+score;
+    }
+  }
+
+  // mom & dad follow behind so you never lose them
+  const followLerp=(c,target)=>{ c.x += (target - c.x)*0.06; c.face = (target>c.x)?1:-1; };
+  followLerp(mom, player.x - 55);
+  followLerp(dad, player.x - 110);
+  mom.y = GROUND-50; dad.y = GROUND-50;
+
+  // camera follows player
+  camX = player.x - 280;
+  camX = Math.max(0, Math.min(WORLD_W-CW, camX));
+
+  // friendly zone message
+  if (player.x>MINE_X-60 && player.x<MINE_X+60) statusEl.textContent='⛏️ You reached MINECRAFT! Press Space to mine the blocks!';
+}
+
+// ---------- draw ----------
+function drawPerson(x,y,skin,shirt,label){
+  // body
+  ctx.fillStyle=shirt; ctx.fillRect(x+6,y+18,18,24);
+  // legs
+  ctx.fillStyle='#3554a0'; ctx.fillRect(x+7,y+40,7,12); ctx.fillRect(x+16,y+40,7,12);
+  // head
+  ctx.fillStyle=skin; ctx.fillRect(x+7,y,16,16);
+  // hair
+  ctx.fillStyle='#5a3a1a'; ctx.fillRect(x+6,y-2,18,6);
+  if (label){
+    ctx.fillStyle='#fff'; ctx.font='bold 11px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(label, x+15, y-8);
+  }
+}
+
+function draw(){
+  // sky changes from forest blue to dark cave
+  const mineMix = Math.max(0, Math.min(1, (player.x-MINE_X+200)/600));
+  ctx.fillStyle = mineMix>0.5 ? '#243a47' : '#7ec0ee';
+  ctx.fillRect(0,0,CW,CH);
+  // sun
+  if (mineMix<0.6){ ctx.fillStyle='#fff7c0'; ctx.beginPath(); ctx.arc(90,70,34,0,7); ctx.fill(); }
+
+  ctx.save();
+  ctx.translate(-camX,0);
+
+  // parallax forest hills
+  ctx.fillStyle = mineMix>0.5 ? '#1b2c34' : '#4a8a3a';
+  for (let i=0;i<WORLD_W;i+=200){
+    ctx.beginPath(); ctx.arc(i+ (camX*0.0), GROUND, 120, Math.PI, 0); ctx.fill();
+  }
+
+  // trees in the forest part
+  for (let i=0;i<MINE_X;i+=180){
+    const tx=i+60;
+    ctx.fillStyle='#6b4423'; ctx.fillRect(tx, GROUND-90, 16, 90);
+    ctx.fillStyle='#2f7d32'; ctx.beginPath(); ctx.arc(tx+8, GROUND-100, 42, 0, 7); ctx.fill();
+  }
+
+  // ground
+  ctx.fillStyle = '#6b4423'; ctx.fillRect(0, GROUND, WORLD_W, CH-GROUND);
+  ctx.fillStyle = '#3aa03a'; ctx.fillRect(0, GROUND, WORLD_W, 10);
+
+  // minecraft portal marker
+  ctx.fillStyle='#222'; ctx.fillRect(MINE_X-6, GROUND-160, 12, 160);
+  ctx.fillStyle='#b06cff'; ctx.font='bold 16px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('⛏️ MINECRAFT →', MINE_X+90, GROUND-130);
+
+  // blocks
+  for (const [k,blk] of blocks){
+    const [cx,cy]=k.split(',').map(Number);
+    const x=cx*BS, y=cy*BS;
+    let col = blk.type==='dirt'?'#7a5230':blk.type==='stone'?'#888':'#5ef0ff';
+    ctx.fillStyle=col; ctx.fillRect(x,y,BS-1,BS-1);
+    ctx.strokeStyle='rgba(0,0,0,0.35)'; ctx.strokeRect(x+0.5,y+0.5,BS-2,BS-2);
+    if (blk.type==='dirt'){ ctx.fillStyle='#3aa03a'; ctx.fillRect(x,y,BS-1,7); }
+    if (blk.type==='diamond'){ ctx.fillStyle='#fff'; ctx.font='20px sans-serif'; ctx.textAlign='center'; ctx.fillText('💎', x+BS/2, y+BS/2+7); }
+    if (blk.hp<( blk.type==='stone'||blk.type==='diamond'?2:1)){ // cracked
+      ctx.strokeStyle='rgba(0,0,0,0.7)'; ctx.beginPath();
+      ctx.moveTo(x+5,y+5); ctx.lineTo(x+BS-8,y+BS-8); ctx.moveTo(x+BS-8,y+6); ctx.lineTo(x+8,y+BS-6); ctx.stroke();
+    }
+  }
+
+  // apples
+  for (const a of apples){ if(!a.got){ ctx.font='22px sans-serif'; ctx.textAlign='center'; ctx.fillText('🍎', a.x, a.y); } }
+
+  // mom & dad
+  drawPerson(dad.x, dad.y, '#e0b080', '#2c6e2c', 'DAD');
+  drawPerson(mom.x, mom.y, '#f0c8a0', '#b03a7a', 'MOM');
+
+  // YOU — pickaxe + bright outline
+  ctx.save();
+  ctx.lineWidth=2; ctx.strokeStyle='#ffea00';
+  drawPerson(player.x, player.y, '#f5cda0', '#ffcc00', 'YOU');
+  ctx.strokeRect(player.x+5, player.y-2, 22, 54);
+  ctx.restore();
+  // pickaxe in facing direction
+  ctx.font='20px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('⛏️', player.x+player.w/2 + player.face*20, player.y+24);
+
+  ctx.restore();
+
+  if (state==='win'){
+    ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(0,0,CW,CH);
+    ctx.fillStyle='#5ef0ff'; ctx.font='bold 40px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('💎 YOU WIN! 💎', CW/2, CH/2);
+  }
+}
+
+function updateHUD(){
+  hudEl.textContent = `🍎 ${score}   |   🟫 ${inv.dirt}  🪨 ${inv.stone}  💎 ${inv.diamond}`;
+}
+
+function frame(){ update(); draw(); updateHUD(); requestAnimationFrame(frame); }
+
+function start(){
+  reset(); state='play';
+  statusEl.textContent='Walk right with Mom & Dad! Grab apples, then dig through Minecraft. ⛏️';
+}
+
+startBtn.onclick = start;
+reset(); state='ready';
+statusEl.textContent='Press START to head into the forest!';
+updateHUD(); draw(); frame();
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    up:'ArrowUp', down:'ArrowDown', left:'ArrowLeft', right:'ArrowRight',
+    a:'Space', b:'Space', x:'Space', y:'ArrowUp', start:'Space'
+  }]
+});
+</script>
+</body>
+</html>

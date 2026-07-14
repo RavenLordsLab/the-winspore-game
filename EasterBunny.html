@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Easter Bunny — Hide & Find</title>
+<style>
+  body { margin: 0; background: linear-gradient(180deg, #ffd6e7 0%, #c8e7ff 100%); color: #2a1a3a; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; user-select: none; min-height: 100vh; }
+  h1 { margin: 10px 0 4px; font-size: 30px; }
+  small { opacity: 0.75; margin-bottom: 6px; }
+  #wrap { position: relative; }
+  canvas { background: #b8e6a0; border: 6px solid #9b7653; border-radius: 12px; display: block; box-shadow: 0 6px 20px rgba(0,0,0,0.25); cursor: crosshair; }
+  #hud { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; pointer-events: none; gap: 10px; }
+  .panel { background: rgba(255,255,255,0.92); color: #2a1a3a; padding: 10px 14px; border-radius: 10px; font-size: 15px; box-shadow: 0 3px 8px rgba(0,0,0,0.25); pointer-events: auto; }
+  #phase { font-weight: bold; font-size: 17px; }
+  #scoreboard { text-align: right; min-width: 180px; }
+  .p1 { color: #c2185b; font-weight: bold; }
+  .p2 { color: #1565c0; font-weight: bold; }
+  .bunny { color: #6a1b9a; font-weight: bold; }
+  .turn-active { background: #fff59d; padding: 1px 6px; border-radius: 4px; }
+  #overlay { position: absolute; inset: 0; background: rgba(20,10,40,0.97); color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 12px; text-align: center; padding: 30px; }
+  #overlay h2 { font-size: 36px; margin: 8px 0; }
+  #overlay p { font-size: 20px; max-width: 600px; line-height: 1.4; }
+  #overlay input { font-size: 18px; padding: 8px 12px; border-radius: 6px; border: 2px solid #fff; background: rgba(255,255,255,0.15); color: #fff; margin: 4px; width: 220px; text-align: center; }
+  #overlay input::placeholder { color: rgba(255,255,255,0.6); }
+  button { margin: 8px; font-size: 18px; padding: 10px 22px; border-radius: 8px; border: none; cursor: pointer; background: #ffb74d; color: #3a2a00; font-weight: bold; box-shadow: 0 3px 6px rgba(0,0,0,0.3); }
+  button:hover { background: #ffa726; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .big-emoji { font-size: 80px; margin: 10px; }
+  .row { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  #toast { position: absolute; top: 25%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; background: rgba(255,255,255,0.95); color: #2a1a3a; padding: 14px 24px; border-radius: 12px; opacity: 0; transition: opacity 0.3s; pointer-events: none; font-weight: bold; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+</style>
+</head>
+<body>
+<h1>🐰 Easter Bunny — Hide &amp; Find 🥚</h1>
+<small>One Bunny hides the eggs &nbsp;•&nbsp; Two Finders take turns clicking to find them</small>
+<div id="wrap">
+  <canvas id="game" width="960" height="600"></canvas>
+  <div id="hud">
+    <div class="panel" id="phasePanel">
+      <div id="phase">Setup</div>
+      <div id="phaseInfo" style="font-size:13px; opacity:0.8; margin-top:2px;"></div>
+    </div>
+    <div class="panel" id="scoreboard" style="display:none;">
+      <div><span class="p1" id="p1Name">Player 1</span>: <span id="p1Score">0</span></div>
+      <div><span class="p2" id="p2Name">Player 2</span>: <span id="p2Score">0</span></div>
+      <div style="margin-top:4px; border-top:1px dashed #aaa; padding-top:4px;">
+        Eggs found: <span id="foundCount">0</span>/<span id="totalEggs">0</span>
+      </div>
+    </div>
+  </div>
+  <div id="toast"></div>
+  <div id="overlay">
+    <div class="big-emoji">🐰🥚🥚</div>
+    <h2>Easter Bunny — Hide &amp; Find</h2>
+    <p>One player is the Easter Bunny and hides eggs around the garden.<br>
+       Two finders then take turns clicking to find them.<br>
+       Whoever finds the most eggs wins!</p>
+    <div class="row">
+      <input type="text" id="bunnyName" placeholder="Easter Bunny name" maxlength="14">
+    </div>
+    <div class="row">
+      <input type="text" id="player1Name" placeholder="Finder 1 name" maxlength="14">
+      <input type="text" id="player2Name" placeholder="Finder 2 name" maxlength="14">
+    </div>
+    <div class="row">
+      <label style="font-size:16px;">Number of eggs:
+        <select id="eggCount" style="font-size:16px; padding:4px 8px; border-radius:6px;">
+          <option value="6">6</option>
+          <option value="10" selected>10</option>
+          <option value="14">14</option>
+          <option value="18">18</option>
+        </select>
+      </label>
+    </div>
+    <button id="startBtn">Start Hiding 🐰</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const overlay = document.getElementById('overlay');
+const toastEl = document.getElementById('toast');
+
+const state = {
+  phase: 'setup',         // setup, hiding, transition, finding, end
+  bunnyName: 'Bunny',
+  p1Name: 'Player 1',
+  p2Name: 'Player 2',
+  totalEggs: 10,
+  eggs: [],               // {x,y,color,pattern,found,foundBy}
+  currentFinder: 1,       // 1 or 2
+  scores: { 1: 0, 2: 0 },
+  hoverPos: null,
+  scenery: [],            // pre-rendered scene objects
+};
+
+const EGG_COLORS = [
+  ['#ff6b9d', '#ffd1dc'],
+  ['#5dade2', '#aed6f1'],
+  ['#f9c74f', '#fff3b0'],
+  ['#90ee90', '#d4f1be'],
+  ['#c39bd3', '#e8daef'],
+  ['#ff9f43', '#ffd9a8'],
+  ['#48d1cc', '#b2dfdb'],
+  ['#ff8a80', '#ffcdd2'],
+];
+const EGG_RADIUS = 18;          // visual radius
+const FIND_RADIUS = 38;          // click hit radius for finders
+
+function buildScenery() {
+  const items = [];
+  // big tree
+  items.push({ type: 'tree', x: 130, y: 380, r: 80 });
+  items.push({ type: 'tree', x: 830, y: 200, r: 65 });
+  // bushes
+  for (const [x, y, r] of [[300, 180, 45], [500, 460, 55], [720, 510, 50], [200, 540, 48], [620, 250, 42], [400, 320, 40], [810, 430, 46], [60, 250, 38]]) {
+    items.push({ type: 'bush', x, y, r });
+  }
+  // flowers
+  for (let i = 0; i < 28; i++) {
+    items.push({ type: 'flower', x: 30 + Math.random() * (W - 60), y: 60 + Math.random() * (H - 120), c: ['#ff5577','#ffaa00','#ffffff','#aa66ff'][Math.floor(Math.random()*4)] });
+  }
+  // mushrooms
+  for (const [x, y] of [[420, 540], [680, 380], [90, 480], [560, 150], [260, 420]]) {
+    items.push({ type: 'mushroom', x, y });
+  }
+  // fence posts at top
+  for (let x = 20; x < W; x += 40) items.push({ type: 'fence', x, y: 30 });
+  // rocks
+  for (const [x, y] of [[150, 200], [680, 460], [340, 480], [860, 350]]) {
+    items.push({ type: 'rock', x, y });
+  }
+  state.scenery = items;
+}
+
+function drawScene() {
+  // grass gradient
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#8ed078');
+  g.addColorStop(1, '#5fa84e');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // grass texture lines
+  ctx.strokeStyle = 'rgba(60,120,40,0.3)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 200; i++) {
+    const x = (i * 47.3) % W;
+    const y = 50 + ((i * 91.7) % (H - 60));
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + 2, y - 5);
+    ctx.stroke();
+  }
+
+  // sky strip at top
+  const sky = ctx.createLinearGradient(0, 0, 0, 70);
+  sky.addColorStop(0, '#bce5ff');
+  sky.addColorStop(1, '#8ed078');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, 60);
+
+  for (const item of state.scenery) drawScenery(item);
+}
+
+function drawScenery(item) {
+  if (item.type === 'tree') {
+    // trunk
+    ctx.fillStyle = '#7a4f2a';
+    ctx.fillRect(item.x - 14, item.y - 20, 28, 70);
+    // foliage
+    ctx.fillStyle = '#3d8b3d';
+    ctx.beginPath();
+    ctx.arc(item.x, item.y - 30, item.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#4ea84e';
+    ctx.beginPath();
+    ctx.arc(item.x - 25, item.y - 50, item.r * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(item.x + 25, item.y - 45, item.r * 0.6, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (item.type === 'bush') {
+    ctx.fillStyle = '#3d8b3d';
+    ctx.beginPath();
+    ctx.arc(item.x, item.y, item.r, 0, Math.PI * 2);
+    ctx.arc(item.x - item.r * 0.6, item.y + 5, item.r * 0.7, 0, Math.PI * 2);
+    ctx.arc(item.x + item.r * 0.6, item.y + 5, item.r * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.beginPath();
+    ctx.arc(item.x - item.r * 0.3, item.y - item.r * 0.4, item.r * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (item.type === 'flower') {
+    ctx.fillStyle = '#3a7a2a';
+    ctx.fillRect(item.x - 1, item.y, 2, 10);
+    ctx.fillStyle = item.c;
+    for (let a = 0; a < 5; a++) {
+      const ang = (a / 5) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(item.x + Math.cos(ang) * 3, item.y + Math.sin(ang) * 3, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = '#ffeb3b';
+    ctx.beginPath();
+    ctx.arc(item.x, item.y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (item.type === 'mushroom') {
+    ctx.fillStyle = '#f5e1c0';
+    ctx.fillRect(item.x - 4, item.y, 8, 12);
+    ctx.fillStyle = '#d32f2f';
+    ctx.beginPath();
+    ctx.arc(item.x, item.y, 10, Math.PI, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(item.x - 3, item.y - 4, 1.5, 0, Math.PI * 2);
+    ctx.arc(item.x + 4, item.y - 3, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (item.type === 'fence') {
+    ctx.fillStyle = '#a07050';
+    ctx.fillRect(item.x, item.y, 6, 30);
+    ctx.fillStyle = '#7a5030';
+    ctx.fillRect(item.x, item.y, 6, 3);
+    if (item.x > 20) {
+      ctx.fillRect(item.x - 36, item.y + 8, 42, 4);
+      ctx.fillRect(item.x - 36, item.y + 20, 42, 4);
+    }
+  } else if (item.type === 'rock') {
+    ctx.fillStyle = '#888';
+    ctx.beginPath();
+    ctx.ellipse(item.x, item.y, 22, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#aaa';
+    ctx.beginPath();
+    ctx.ellipse(item.x - 6, item.y - 4, 8, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawEgg(x, y, colors, pattern, opts = {}) {
+  const scale = opts.scale || 1;
+  const r = EGG_RADIUS * scale;
+  ctx.save();
+  ctx.translate(x, y);
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(2, r + 2, r * 0.7, 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // egg body (slightly pointed at top)
+  ctx.fillStyle = colors[0];
+  ctx.beginPath();
+  ctx.ellipse(0, 0, r * 0.75, r * 1.0, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // pattern
+  ctx.fillStyle = colors[1];
+  if (pattern === 0) {
+    // stripes
+    for (let i = -2; i <= 2; i++) {
+      ctx.fillRect(-r * 0.75, i * 6 - 1, r * 1.5, 3);
+    }
+  } else if (pattern === 1) {
+    // dots
+    for (let i = 0; i < 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.arc(Math.cos(ang) * r * 0.4, Math.sin(ang) * r * 0.5, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (pattern === 2) {
+    // zigzag
+    ctx.strokeStyle = colors[1];
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let i = -1; i <= 1; i++) {
+      const yy = i * 8;
+      ctx.moveTo(-r * 0.6, yy);
+      ctx.lineTo(-r * 0.3, yy - 3);
+      ctx.lineTo(0, yy);
+      ctx.lineTo(r * 0.3, yy - 3);
+      ctx.lineTo(r * 0.6, yy);
+    }
+    ctx.stroke();
+  } else {
+    // diamond
+    ctx.beginPath();
+    ctx.moveTo(0, -r * 0.5);
+    ctx.lineTo(r * 0.4, 0);
+    ctx.lineTo(0, r * 0.5);
+    ctx.lineTo(-r * 0.4, 0);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // shine
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.beginPath();
+  ctx.ellipse(-r * 0.3, -r * 0.5, r * 0.18, r * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // outline
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, r * 0.75, r * 1.0, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawSparkle(x, y, t) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(t * 0.005);
+  ctx.fillStyle = `rgba(255, 230, 80, ${0.6 + 0.3 * Math.sin(t * 0.01)})`;
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const ang = (i / 8) * Math.PI * 2;
+    const r = i % 2 === 0 ? 28 : 12;
+    if (i === 0) ctx.moveTo(Math.cos(ang) * r, Math.sin(ang) * r);
+    else ctx.lineTo(Math.cos(ang) * r, Math.sin(ang) * r);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+function render() {
+  drawScene();
+
+  if (state.phase === 'hiding') {
+    // bunny sees all eggs they've placed
+    for (const e of state.eggs) drawEgg(e.x, e.y, e.colors, e.pattern);
+    if (state.hoverPos) {
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      drawEgg(state.hoverPos.x, state.hoverPos.y, EGG_COLORS[state.eggs.length % EGG_COLORS.length], state.eggs.length % 4);
+      ctx.restore();
+    }
+  } else if (state.phase === 'finding' || state.phase === 'end') {
+    const t = performance.now();
+    // draw a glowing hover hint on the nearest unfound egg
+    const hovered = (state.phase === 'finding' && state.hoverPos) ? nearestUnfoundEgg(state.hoverPos.x, state.hoverPos.y) : null;
+    for (const e of state.eggs) {
+      if (e.found) {
+        if (e.foundAt && t - e.foundAt < 1200) drawSparkle(e.x, e.y, t);
+        drawEgg(e.x, e.y, e.colors, e.pattern);
+        ctx.fillStyle = e.foundBy === 1 ? '#c2185b' : '#1565c0';
+        ctx.font = 'bold 12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(e.foundBy === 1 ? '①' : '②', e.x, e.y + 36);
+      } else if (e === hovered) {
+        // soft golden glow under the egg
+        const pulse = 0.6 + 0.4 * Math.sin(t * 0.008);
+        const grad = ctx.createRadialGradient(e.x, e.y, 4, e.x, e.y, 42);
+        grad.addColorStop(0, `rgba(255, 240, 120, ${0.85 * pulse})`);
+        grad.addColorStop(0.5, `rgba(255, 220, 80, ${0.45 * pulse})`);
+        grad.addColorStop(1, 'rgba(255, 220, 80, 0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(e.x, e.y, 42, 0, Math.PI * 2);
+        ctx.fill();
+        drawEgg(e.x, e.y, e.colors, e.pattern);
+      }
+    }
+  }
+}
+
+function animate() {
+  render();
+  requestAnimationFrame(animate);
+}
+
+function setPhase(p) {
+  state.phase = p;
+  const phaseEl = document.getElementById('phase');
+  const info = document.getElementById('phaseInfo');
+  if (p === 'hiding') {
+    phaseEl.innerHTML = `🐰 <span class="bunny">${state.bunnyName}</span> is hiding eggs`;
+    info.textContent = `Click to place eggs (${state.eggs.length}/${state.totalEggs})`;
+  } else if (p === 'finding') {
+    updateTurnUI();
+  } else if (p === 'end') {
+    phaseEl.innerHTML = `🎉 Game Over!`;
+    info.textContent = '';
+  }
+}
+
+function updateTurnUI() {
+  const phaseEl = document.getElementById('phase');
+  const info = document.getElementById('phaseInfo');
+  const name = state.currentFinder === 1 ? state.p1Name : state.p2Name;
+  const cls = state.currentFinder === 1 ? 'p1' : 'p2';
+  phaseEl.innerHTML = `<span class="${cls} turn-active">${name}</span>'s turn — find an egg!`;
+  const remaining = state.eggs.filter(e => !e.found).length;
+  info.textContent = `${remaining} egg${remaining===1?'':'s'} left to find`;
+  // refresh scoreboard active styling
+  document.getElementById('p1Name').classList.toggle('turn-active', state.currentFinder === 1);
+  document.getElementById('p2Name').classList.toggle('turn-active', state.currentFinder === 2);
+}
+
+function showToast(msg, duration = 1200) {
+  toastEl.textContent = msg;
+  toastEl.style.opacity = '1';
+  clearTimeout(toastEl._t);
+  toastEl._t = setTimeout(() => { toastEl.style.opacity = '0'; }, duration);
+}
+
+function getCanvasPos(ev) {
+  const rect = canvas.getBoundingClientRect();
+  const sx = canvas.width / rect.width;
+  const sy = canvas.height / rect.height;
+  return { x: (ev.clientX - rect.left) * sx, y: (ev.clientY - rect.top) * sy };
+}
+
+function isValidPlacement(x, y) {
+  if (x < 30 || x > W - 30 || y < 65 || y > H - 30) return false;
+  // not too close to other eggs
+  for (const e of state.eggs) {
+    const d = Math.hypot(e.x - x, e.y - y);
+    if (d < 50) return false;
+  }
+  return true;
+}
+
+canvas.addEventListener('mousemove', (ev) => {
+  if (state.phase !== 'hiding' && state.phase !== 'finding') { state.hoverPos = null; return; }
+  state.hoverPos = getCanvasPos(ev);
+  if (state.phase === 'finding') {
+    const near = nearestUnfoundEgg(state.hoverPos.x, state.hoverPos.y);
+    canvas.style.cursor = near ? 'pointer' : 'crosshair';
+  }
+});
+
+canvas.addEventListener('mouseleave', () => { state.hoverPos = null; });
+
+function nearestUnfoundEgg(x, y) {
+  let best = null, bestD = FIND_RADIUS;
+  for (const e of state.eggs) {
+    if (e.found) continue;
+    const d = Math.hypot(e.x - x, e.y - y);
+    if (d <= bestD) { bestD = d; best = e; }
+  }
+  return best;
+}
+
+canvas.addEventListener('click', (ev) => {
+  const { x, y } = getCanvasPos(ev);
+  if (state.phase === 'hiding') {
+    if (!isValidPlacement(x, y)) {
+      showToast('Too close to edge or another egg!', 900);
+      return;
+    }
+    const idx = state.eggs.length;
+    state.eggs.push({
+      x, y,
+      colors: EGG_COLORS[idx % EGG_COLORS.length],
+      pattern: idx % 4,
+      found: false,
+    });
+    document.getElementById('phaseInfo').textContent = `Click to place eggs (${state.eggs.length}/${state.totalEggs})`;
+    if (state.eggs.length >= state.totalEggs) {
+      state.hoverPos = null;
+      showTransition();
+    }
+  } else if (state.phase === 'finding') {
+    const hit = nearestUnfoundEgg(x, y);
+    if (hit) {
+      hit.found = true;
+      hit.foundBy = state.currentFinder;
+      hit.foundAt = performance.now();
+      state.scores[state.currentFinder]++;
+      document.getElementById(state.currentFinder === 1 ? 'p1Score' : 'p2Score').textContent = state.scores[state.currentFinder];
+      document.getElementById('foundCount').textContent = state.eggs.filter(e => e.found).length;
+      const finderName = state.currentFinder === 1 ? state.p1Name : state.p2Name;
+      showToast(`🥚 ${finderName} found an egg!`, 900);
+      if (state.eggs.every(e => e.found)) {
+        setTimeout(showEnd, 1300);
+        return;
+      }
+      // bonus: keep going? Let's switch turns even on a find for fairness.
+      state.currentFinder = state.currentFinder === 1 ? 2 : 1;
+      updateTurnUI();
+    } else {
+      showToast('Nope! No egg here.', 700);
+      state.currentFinder = state.currentFinder === 1 ? 2 : 1;
+      updateTurnUI();
+    }
+  }
+});
+
+function showTransition() {
+  state.phase = 'transition';
+  overlay.innerHTML = `
+    <div class="big-emoji">🙈</div>
+    <h2>Pass the device to the Finders!</h2>
+    <p><strong class="bunny">${state.bunnyName}</strong> has hidden all the eggs.<br>
+       Finders, look away until ${state.bunnyName} hands the device over.</p>
+    <p style="font-size:16px; opacity:0.85;">Click below when <strong>${state.p1Name}</strong> and <strong>${state.p2Name}</strong> are ready.</p>
+    <button id="readyBtn">Start Finding 🔍</button>
+  `;
+  overlay.style.display = 'flex';
+  document.getElementById('readyBtn').onclick = () => {
+    overlay.style.display = 'none';
+    document.getElementById('scoreboard').style.display = 'block';
+    document.getElementById('totalEggs').textContent = state.totalEggs;
+    state.currentFinder = 1;
+    setPhase('finding');
+  };
+}
+
+function showEnd() {
+  state.phase = 'end';
+  const s1 = state.scores[1], s2 = state.scores[2];
+  let result;
+  if (s1 > s2) result = `🏆 <span class="p1">${state.p1Name}</span> wins!`;
+  else if (s2 > s1) result = `🏆 <span class="p2">${state.p2Name}</span> wins!`;
+  else result = `🤝 It's a tie!`;
+  overlay.innerHTML = `
+    <div class="big-emoji">🎉🥚🎉</div>
+    <h2>All eggs found!</h2>
+    <p style="font-size:26px;">${result}</p>
+    <p>
+      <span class="p1">${state.p1Name}</span>: <strong>${s1}</strong> egg${s1===1?'':'s'}<br>
+      <span class="p2">${state.p2Name}</span>: <strong>${s2}</strong> egg${s2===1?'':'s'}
+    </p>
+    <button id="againBtn">Play Again 🐰</button>
+  `;
+  overlay.style.display = 'flex';
+  document.getElementById('againBtn').onclick = () => location.reload();
+}
+
+document.getElementById('startBtn').onclick = () => {
+  state.bunnyName = (document.getElementById('bunnyName').value.trim() || 'Bunny');
+  state.p1Name = (document.getElementById('player1Name').value.trim() || 'Player 1');
+  state.p2Name = (document.getElementById('player2Name').value.trim() || 'Player 2');
+  state.totalEggs = parseInt(document.getElementById('eggCount').value, 10);
+  document.getElementById('p1Name').textContent = state.p1Name;
+  document.getElementById('p2Name').textContent = state.p2Name;
+  overlay.style.display = 'none';
+  buildScenery();
+  setPhase('hiding');
+};
+
+// allow Enter to start
+for (const id of ['bunnyName', 'player1Name', 'player2Name']) {
+  document.getElementById(id).addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('startBtn').click();
+  });
+}
+
+buildScenery();
+animate();
+</script>
+</body>
+</html>

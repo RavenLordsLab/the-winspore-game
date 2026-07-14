@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>MineCraft - Creator Mode</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #87ceeb; font-family: 'Segoe UI', sans-serif; }
+  canvas { display: block; }
+  #crosshair {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: white; font-size: 24px; pointer-events: none; text-shadow: 0 0 4px black;
+    user-select: none;
+  }
+  #hotbar {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 4px; background: rgba(0,0,0,0.4); padding: 6px;
+    border-radius: 8px; border: 2px solid #222;
+  }
+  .slot {
+    width: 50px; height: 50px; border: 2px solid #555; background: #888;
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: bold; font-size: 11px; text-align: center;
+    text-shadow: 0 0 3px black;
+  }
+  .slot.active { border-color: #fff; box-shadow: 0 0 8px white; }
+  #info {
+    position: fixed; top: 8px; left: 8px; color: white; text-shadow: 0 0 4px black;
+    font-size: 14px; pointer-events: none; line-height: 1.5em;
+  }
+  #hud {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    color: white; text-shadow: 0 0 4px black; font-size: 16px; text-align: center;
+    pointer-events: none;
+  }
+  #hpbar {
+    width: 240px; height: 16px; background: rgba(0,0,0,0.5); border: 2px solid #222;
+    border-radius: 4px; overflow: hidden; margin: 4px auto;
+  }
+  #hpfill { height: 100%; background: linear-gradient(to right, #d22, #f55); width: 100%; transition: width 0.2s; }
+  #toast {
+    position: fixed; top: 30%; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.7); color: #ffd54f; padding: 10px 18px; border-radius: 6px;
+    font-size: 18px; font-weight: bold; opacity: 0; transition: opacity 0.3s;
+    pointer-events: none; border: 2px solid #ffd54f;
+  }
+  #toast.show { opacity: 1; }
+  #menu {
+    position: fixed; inset: 0; background: rgba(20,20,30,0.92); color: white;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 20px;
+  }
+  #menu h1 { font-size: 56px; margin: 0 0 10px; letter-spacing: 4px; text-shadow: 3px 3px 0 #2a2a2a; }
+  #menu p { max-width: 640px; line-height: 1.6em; }
+  #menu button {
+    margin-top: 18px; padding: 12px 32px; font-size: 20px; background: #4caf50; color: white;
+    border: 2px solid #2e7d32; border-radius: 6px; cursor: pointer; font-weight: bold;
+  }
+  #menu button:hover { background: #66bb6a; }
+  kbd { background: #444; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+</style>
+</head>
+<body>
+<div id="info"></div>
+<div id="crosshair">+</div>
+<div id="hud">
+  <div id="hpbar"><div id="hpfill"></div></div>
+  <div id="ride-info"></div>
+</div>
+<div id="hotbar"></div>
+<div id="toast"></div>
+
+<div id="menu">
+  <h1>MINECRAFT</h1>
+  <h2 style="margin:0;color:#8bc34a;">Creator Mode + Mobs</h2>
+  <p>
+    <kbd>WASD</kbd> move &nbsp; <kbd>Mouse</kbd> look &nbsp; <kbd>Space</kbd> fly up &nbsp; <kbd>Shift</kbd> fly down<br>
+    <kbd>Left Click</kbd> break &nbsp; <kbd>Right Click</kbd> place / ride boat / trade villager<br>
+    <kbd>1-9</kbd> choose item &nbsp; <kbd>Q</kbd>/<kbd>E</kbd> cycle &nbsp; <kbd>F</kbd> exit boat &nbsp; <kbd>Esc</kbd> menu<br><br>
+    <b>Mobs:</b> Skeletons shoot arrows. Zombies chase and bump. Creepers explode (3-block radius).
+    Villagers trade — right-click them and they hand you random blocks!<br><br>
+    <b>Tip:</b> Build houses/hideouts with blocks. Pick "Boat" from the hotbar and right-click water to drop one, then right-click the boat to ride it.<br><br>
+    <b>Gamepad (controller 1 only):</b> Left stick move &nbsp; Right stick look<br>
+    A fly up / interact &nbsp; B fly down &nbsp; RT place &nbsp; LT break &nbsp; LB/RB cycle blocks
+  </p>
+  <button id="startBtn">Start Game</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="gamepad.js"></script>
+<script>
+// ===== Block / item palette =====
+const BLOCKS = [
+  { name: 'Grass',   color: 0x55aa44, top: 0x66cc55, side: 0x8b5a2b },
+  { name: 'Dirt',    color: 0x8b5a2b },
+  { name: 'Stone',   color: 0x888888 },
+  { name: 'Wood',    color: 0x6b4423 },
+  { name: 'Leaves',  color: 0x2e8b3e },
+  { name: 'Sand',    color: 0xe5d08a },
+  { name: 'Water',   color: 0x3070d0 },
+  { name: 'Glow',    color: 0xffcc33 },
+  { name: 'Boat',    color: 0xa0522d, isBoat: true },
+];
+
+const WORLD_SIZE = 32;
+const blocks = new Map(); // key "x,y,z" -> { type, mesh }
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 50, 140);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 500);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.position.set(40, 80, 30);
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x87ceeb, 0x554433, 0.4));
+
+// ===== Block materials =====
+const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+const materialsCache = new Map();
+function getMaterial(type) {
+  if (materialsCache.has(type)) return materialsCache.get(type);
+  const def = BLOCKS[type];
+  let mat;
+  if (def.top !== undefined) {
+    const top = new THREE.MeshLambertMaterial({ color: def.top });
+    const side = new THREE.MeshLambertMaterial({ color: def.side });
+    const bottom = new THREE.MeshLambertMaterial({ color: 0x6b4423 });
+    mat = [side, side, top, bottom, side, side];
+  } else if (def.name === 'Water') {
+    mat = new THREE.MeshLambertMaterial({ color: def.color, transparent: true, opacity: 0.7 });
+  } else if (def.name === 'Glow') {
+    mat = new THREE.MeshBasicMaterial({ color: def.color });
+  } else if (def.name === 'Leaves') {
+    mat = new THREE.MeshLambertMaterial({ color: def.color, transparent: true, opacity: 0.9 });
+  } else {
+    mat = new THREE.MeshLambertMaterial({ color: def.color });
+  }
+  materialsCache.set(type, mat);
+  return mat;
+}
+
+function key(x,y,z) { return x+','+y+','+z; }
+function setBlock(x, y, z, type) {
+  x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
+  const k = key(x,y,z);
+  if (blocks.has(k)) {
+    scene.remove(blocks.get(k).mesh);
+    blocks.delete(k);
+  }
+  if (type == null) return;
+  const mesh = new THREE.Mesh(cubeGeo, getMaterial(type));
+  mesh.position.set(x + 0.5, y + 0.5, z + 0.5);
+  mesh.userData = { x, y, z, type, isBlock: true };
+  scene.add(mesh);
+  blocks.set(k, { type, mesh });
+}
+function getBlock(x,y,z) { return blocks.get(key(Math.floor(x), Math.floor(y), Math.floor(z))); }
+
+// ===== World gen =====
+function heightAt(x, z) {
+  const h = 6
+    + 2.5 * Math.sin(x * 0.18) * Math.cos(z * 0.15)
+    + 1.5 * Math.sin((x+z) * 0.07)
+    + 1.2 * Math.cos(x * 0.32 + z * 0.21);
+  return Math.floor(h);
+}
+function generateWorld() {
+  for (let x = -WORLD_SIZE; x < WORLD_SIZE; x++) {
+    for (let z = -WORLD_SIZE; z < WORLD_SIZE; z++) {
+      const h = heightAt(x, z);
+      for (let y = 0; y < h - 2; y++) setBlock(x, y, z, 2);
+      setBlock(x, h - 2, z, 1);
+      setBlock(x, h - 1, z, 1);
+      if (h < 5) setBlock(x, h, z, 5); else setBlock(x, h, z, 0);
+    }
+  }
+  for (let i = 0; i < 22; i++) {
+    const tx = Math.floor((Math.random() - 0.5) * WORLD_SIZE * 1.6);
+    const tz = Math.floor((Math.random() - 0.5) * WORLD_SIZE * 1.6);
+    const th = heightAt(tx, tz) + 1;
+    if (th < 6) continue;
+    for (let y = 0; y < 4; y++) setBlock(tx, th + y, tz, 3);
+    for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) for (let dy = 3; dy <= 5; dy++) {
+      if (Math.abs(dx) + Math.abs(dz) + Math.abs(dy-4) > 4) continue;
+      if (dx===0 && dz===0 && dy<5) continue;
+      setBlock(tx+dx, th+dy, tz+dz, 4);
+    }
+  }
+  // A pond
+  for (let x = -4; x <= 4; x++) for (let z = -4; z <= 4; z++) {
+    if (x*x + z*z > 16) continue;
+    const px = x + 14, pz = z - 12;
+    for (let y = 0; y < 6; y++) {
+      const k = key(px, y, pz);
+      if (blocks.has(k)) { scene.remove(blocks.get(k).mesh); blocks.delete(k); }
+    }
+    setBlock(px, 5, pz, 6);
+    setBlock(px, 4, pz, 5);
+  }
+}
+generateWorld();
+
+// ===== Player =====
+const player = {
+  pos: new THREE.Vector3(0, 18, 0),
+  yaw: 0, pitch: 0,
+  speed: 8, fastSpeed: 18,
+  hp: 20, maxHp: 20,
+  ridingBoat: null,
+};
+
+const keys = {};
+let pointerLocked = false;
+const canvas = renderer.domElement;
+const menu = document.getElementById('menu');
+
+document.getElementById('startBtn').onclick = () => {
+  menu.style.display = 'none';
+  canvas.requestPointerLock();
+};
+
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = (document.pointerLockElement === canvas);
+  if (!pointerLocked) menu.style.display = 'flex';
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!pointerLocked) return;
+  player.yaw   -= e.movementX * 0.0025;
+  player.pitch -= e.movementY * 0.0025;
+  const lim = Math.PI/2 - 0.01;
+  player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+});
+
+let selectedBlock = 0;
+
+window.addEventListener('keydown', (e) => {
+  keys[e.code] = true; keys[e.key && e.key.toLowerCase()] = true;
+  if (e.code >= 'Digit1' && e.code <= 'Digit9') {
+    const i = parseInt(e.code.slice(5), 10) - 1;
+    if (i < BLOCKS.length) { selectedBlock = i; updateHotbar(); }
+  }
+  if (e.code === 'KeyQ') { selectedBlock = (selectedBlock - 1 + BLOCKS.length) % BLOCKS.length; updateHotbar(); }
+  if (e.code === 'KeyE') { selectedBlock = (selectedBlock + 1) % BLOCKS.length; updateHotbar(); }
+  if (e.code === 'KeyF' && player.ridingBoat) exitBoat();
+});
+window.addEventListener('keyup', (e) => {
+  keys[e.code] = false; keys[e.key && e.key.toLowerCase()] = false;
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (!pointerLocked) return;
+  if (e.button === 0) breakBlock();
+  else if (e.button === 2) primaryAction();
+});
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// ===== Raycast =====
+const raycaster = new THREE.Raycaster();
+raycaster.far = 8;
+function rayHit(extra) {
+  raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+  const meshes = [];
+  blocks.forEach(b => meshes.push(b.mesh));
+  if (extra) extra.forEach(m => meshes.push(m));
+  const hits = raycaster.intersectObjects(meshes, false);
+  return hits[0] || null;
+}
+
+function breakBlock() {
+  // Allow breaking entities too (kill mob if intersected)
+  const entityMeshes = entities.map(e => e.mesh);
+  const hit = rayHit(entityMeshes);
+  if (!hit) return;
+  const ud = hit.object.userData;
+  if (ud && ud.isBlock) {
+    setBlock(ud.x, ud.y, ud.z, null);
+  } else if (ud && ud.entity) {
+    damageEntity(ud.entity, 999);
+  }
+}
+
+function primaryAction() {
+  // right-click: interact (boat/villager) or place block
+  const entityMeshes = entities.map(e => e.mesh);
+  const hit = rayHit(entityMeshes);
+  if (!hit) return;
+  const ud = hit.object.userData;
+  if (ud && ud.entity) {
+    const ent = ud.entity;
+    if (ent.kind === 'villager') { tradeWith(ent); return; }
+    if (ent.kind === 'boat') { rideBoat(ent); return; }
+  }
+  if (ud && ud.isBlock) {
+    const n = hit.face.normal;
+    const nx = ud.x + n.x, ny = ud.y + n.y, nz = ud.z + n.z;
+    const def = BLOCKS[selectedBlock];
+    if (def.isBoat) {
+      // place a boat entity at this spot
+      spawnBoat(nx + 0.5, ny + 0.1, nz + 0.5);
+      return;
+    }
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const py1 = Math.floor(player.pos.y), py2 = Math.floor(player.pos.y - 1.6);
+    if (nx === px && nz === pz && (ny === py1 || ny === py2)) return;
+    setBlock(nx, ny, nz, selectedBlock);
+  }
+}
+
+// ===== Hotbar =====
+const hotbarEl = document.getElementById('hotbar');
+function updateHotbar() {
+  hotbarEl.innerHTML = '';
+  BLOCKS.forEach((b, i) => {
+    const d = document.createElement('div');
+    d.className = 'slot' + (i === selectedBlock ? ' active' : '');
+    d.style.background = '#' + b.color.toString(16).padStart(6,'0');
+    d.textContent = (i+1) + '\n' + b.name;
+    d.style.whiteSpace = 'pre';
+    hotbarEl.appendChild(d);
+  });
+}
+updateHotbar();
+
+// ===== Entities (mobs, boats, arrows) =====
+const entities = [];
+
+function makeBox(w, h, d, color) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
+  return m;
+}
+
+function spawnMob(kind, x, y, z) {
+  const group = new THREE.Group();
+  let color, hp, scale = 1;
+  if (kind === 'zombie')   { color = 0x4a9a3a; hp = 20; }
+  if (kind === 'skeleton') { color = 0xdadadc; hp = 16; }
+  if (kind === 'creeper')  { color = 0x36b13a; hp = 12; }
+  if (kind === 'villager') { color = 0x9c6f3e; hp = 999; }
+
+  const body = makeBox(0.6, 1.2, 0.4, color);
+  body.position.y = 0.6;
+  const head = makeBox(0.55, 0.55, 0.55, color);
+  head.position.y = 1.5;
+  group.add(body); group.add(head);
+
+  // distinguishing details
+  if (kind === 'creeper') {
+    // black "feet" cross
+    const feet = makeBox(0.6, 0.4, 0.4, 0x1f6a23);
+    feet.position.y = 0.2; group.add(feet);
+  }
+  if (kind === 'skeleton') {
+    // arm holding bow
+    const bow = makeBox(0.1, 0.6, 0.1, 0x6b3a1a);
+    bow.position.set(0.4, 1.0, 0.2); group.add(bow);
+  }
+  if (kind === 'villager') {
+    // brown "robe"
+    const robe = makeBox(0.7, 0.8, 0.5, 0x5a3a20);
+    robe.position.y = 0.4; group.add(robe);
+    // big nose
+    const nose = makeBox(0.15, 0.3, 0.25, 0x8e6238);
+    nose.position.set(0, 1.45, 0.3); group.add(nose);
+  }
+  if (kind === 'zombie') {
+    const arm1 = makeBox(0.2, 0.6, 0.2, color);
+    arm1.position.set(0.5, 1.0, 0.4); group.add(arm1);
+    const arm2 = makeBox(0.2, 0.6, 0.2, color);
+    arm2.position.set(-0.5, 1.0, 0.4); group.add(arm2);
+  }
+
+  group.position.set(x, y, z);
+  group.traverse(o => { o.userData = { entity: null }; });
+  scene.add(group);
+
+  const ent = {
+    kind, hp, mesh: group, pos: group.position, vel: new THREE.Vector3(),
+    cooldown: 0, fuse: -1,
+  };
+  group.traverse(o => { o.userData = { entity: ent }; });
+  entities.push(ent);
+  return ent;
+}
+
+function spawnBoat(x, y, z) {
+  const group = new THREE.Group();
+  const hull = makeBox(1.6, 0.4, 0.9, 0xa0522d);
+  group.add(hull);
+  const seat = makeBox(0.6, 0.15, 0.6, 0x6b3818);
+  seat.position.y = 0.3; group.add(seat);
+  group.position.set(x, y, z);
+  scene.add(group);
+  const ent = { kind: 'boat', mesh: group, pos: group.position, vel: new THREE.Vector3(), yaw: 0 };
+  group.traverse(o => { o.userData = { entity: ent }; });
+  entities.push(ent);
+  return ent;
+}
+
+function spawnArrow(from, dir) {
+  const m = makeBox(0.08, 0.08, 0.6, 0xcccccc);
+  m.position.copy(from);
+  scene.add(m);
+  const ent = { kind: 'arrow', mesh: m, pos: m.position, vel: dir.clone().multiplyScalar(22), life: 3 };
+  entities.push(ent);
+}
+
+function topYAt(x, z) {
+  // find tallest filled block at column
+  for (let y = 22; y >= 0; y--) {
+    if (blocks.has(key(Math.floor(x), y, Math.floor(z)))) return y + 1;
+  }
+  return 0;
+}
+
+function damageEntity(ent, amt) {
+  if (ent.kind === 'boat' || ent.kind === 'arrow') return;
+  ent.hp -= amt;
+  if (ent.hp <= 0) {
+    scene.remove(ent.mesh);
+    const i = entities.indexOf(ent);
+    if (i >= 0) entities.splice(i, 1);
+  }
+}
+
+function explode(cx, cy, cz, radius) {
+  for (let dx = -radius; dx <= radius; dx++)
+    for (let dy = -radius; dy <= radius; dy++)
+      for (let dz = -radius; dz <= radius; dz++) {
+        if (dx*dx + dy*dy + dz*dz > radius*radius) continue;
+        setBlock(cx+dx, cy+dy, cz+dz, null);
+      }
+  // Damage player
+  const d = player.pos.distanceTo(new THREE.Vector3(cx, cy, cz));
+  if (d < radius + 2) damagePlayer(Math.floor(10 * (1 - d/(radius+2))));
+}
+
+// ===== Trading =====
+const tradeMessages = [
+  'Gives you 4 Wood!', 'Trades you 6 Stone!', 'Offers some Glow stones!',
+  'Hands you Sand!', 'Trades you Leaves!', 'Gifts you Dirt!',
+];
+let tradeCooldown = new Map();
+function tradeWith(villager) {
+  const now = performance.now();
+  const last = tradeCooldown.get(villager) || 0;
+  if (now - last < 1500) return;
+  tradeCooldown.set(villager, now);
+  const idx = Math.floor(Math.random() * BLOCKS.length);
+  selectedBlock = (idx === 8) ? 3 : idx; // not boat
+  updateHotbar();
+  toast('Villager: ' + tradeMessages[Math.floor(Math.random() * tradeMessages.length)] + ' (selected: ' + BLOCKS[selectedBlock].name + ')');
+}
+
+// ===== Boat ride =====
+function rideBoat(boat) {
+  player.ridingBoat = boat;
+  toast('Riding boat — F to exit');
+}
+function exitBoat() {
+  if (!player.ridingBoat) return;
+  player.pos.copy(player.ridingBoat.pos);
+  player.pos.y += 1.5;
+  player.ridingBoat = null;
+  toast('Exited boat');
+}
+
+// ===== Toast =====
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+// ===== Damage =====
+function damagePlayer(amt) {
+  player.hp = Math.max(0, player.hp - amt);
+  document.getElementById('hpfill').style.width = (100 * player.hp / player.maxHp) + '%';
+  if (player.hp <= 0) {
+    toast('You died! Respawning...');
+    player.hp = player.maxHp;
+    document.getElementById('hpfill').style.width = '100%';
+    player.pos.set(0, 18, 0);
+    if (player.ridingBoat) player.ridingBoat = null;
+  }
+}
+
+// ===== Mob spawning =====
+function spawnInitial() {
+  // skeletons
+  for (let i = 0; i < 3; i++) {
+    const x = (Math.random() - 0.5) * 40, z = (Math.random() - 0.5) * 40;
+    spawnMob('skeleton', x, topYAt(x, z), z);
+  }
+  for (let i = 0; i < 4; i++) {
+    const x = (Math.random() - 0.5) * 40, z = (Math.random() - 0.5) * 40;
+    spawnMob('zombie', x, topYAt(x, z), z);
+  }
+  for (let i = 0; i < 2; i++) {
+    const x = (Math.random() - 0.5) * 40, z = (Math.random() - 0.5) * 40;
+    spawnMob('creeper', x, topYAt(x, z), z);
+  }
+  // Villager village near origin
+  for (let i = 0; i < 3; i++) {
+    spawnMob('villager', -8 + i*3, topYAt(-8 + i*3, 8), 8);
+  }
+}
+spawnInitial();
+
+setInterval(() => {
+  // periodic respawn if low
+  const counts = { skeleton:0, zombie:0, creeper:0, villager:0 };
+  entities.forEach(e => { if (counts[e.kind] !== undefined) counts[e.kind]++; });
+  function pickAway() {
+    let x, z, tries = 0;
+    do {
+      x = (Math.random() - 0.5) * 50;
+      z = (Math.random() - 0.5) * 50;
+      tries++;
+    } while (Math.hypot(x - player.pos.x, z - player.pos.z) < 14 && tries < 10);
+    return [x, z];
+  }
+  if (counts.skeleton < 3) { const [x,z] = pickAway(); spawnMob('skeleton', x, topYAt(x,z), z); }
+  if (counts.zombie < 4)   { const [x,z] = pickAway(); spawnMob('zombie',   x, topYAt(x,z), z); }
+  if (counts.creeper < 2)  { const [x,z] = pickAway(); spawnMob('creeper',  x, topYAt(x,z), z); }
+}, 8000);
+
+// ===== AI / entity tick =====
+function tickEntities(dt) {
+  for (let i = entities.length - 1; i >= 0; i--) {
+    const ent = entities[i];
+    if (ent.kind === 'arrow') {
+      ent.pos.addScaledVector(ent.vel, dt);
+      ent.vel.y -= 9 * dt;
+      ent.life -= dt;
+      // hit player?
+      if (ent.pos.distanceTo(player.pos) < 1.0) {
+        damagePlayer(4);
+        scene.remove(ent.mesh); entities.splice(i, 1); continue;
+      }
+      // hit block / ground?
+      if (ent.life <= 0 || getBlock(ent.pos.x, ent.pos.y, ent.pos.z) || ent.pos.y < 0) {
+        scene.remove(ent.mesh); entities.splice(i, 1); continue;
+      }
+      // align arrow with velocity
+      ent.mesh.lookAt(ent.pos.clone().add(ent.vel));
+      continue;
+    }
+    if (ent.kind === 'boat') {
+      // boats don't move on their own
+      continue;
+    }
+
+    const toPlayer = new THREE.Vector3().subVectors(player.pos, ent.pos);
+    const dist = toPlayer.length();
+    const dir2 = toPlayer.clone(); dir2.y = 0; dir2.normalize();
+    ent.cooldown -= dt;
+
+    if (ent.kind === 'zombie') {
+      if (dist < 28) {
+        ent.pos.addScaledVector(dir2, 2.2 * dt);
+        if (dist < 1.6 && ent.cooldown <= 0) { damagePlayer(2); ent.cooldown = 1.0; }
+      }
+      ent.mesh.rotation.y = Math.atan2(dir2.x, dir2.z);
+    }
+    else if (ent.kind === 'skeleton') {
+      if (dist < 22) {
+        // keep distance
+        if (dist < 8) ent.pos.addScaledVector(dir2, -1.5 * dt);
+        else if (dist > 14) ent.pos.addScaledVector(dir2, 1.8 * dt);
+        if (ent.cooldown <= 0 && dist < 20) {
+          ent.cooldown = 1.8;
+          const from = ent.pos.clone(); from.y += 1.4;
+          const aim = new THREE.Vector3().subVectors(player.pos, from).normalize();
+          aim.y += 0.05;
+          spawnArrow(from, aim);
+        }
+      }
+      ent.mesh.rotation.y = Math.atan2(dir2.x, dir2.z);
+    }
+    else if (ent.kind === 'creeper') {
+      if (dist < 24) {
+        ent.pos.addScaledVector(dir2, 2.4 * dt);
+        ent.mesh.rotation.y = Math.atan2(dir2.x, dir2.z);
+        if (dist < 2.5) {
+          if (ent.fuse < 0) ent.fuse = 1.5;
+          ent.fuse -= dt;
+          // flash white
+          const t = Math.sin(performance.now() * 0.02) * 0.5 + 0.5;
+          ent.mesh.children[0].material.color.setRGB(0.21 + t*0.7, 0.69, 0.23);
+          if (ent.fuse <= 0) {
+            const cx = Math.floor(ent.pos.x), cy = Math.floor(ent.pos.y + 0.5), cz = Math.floor(ent.pos.z);
+            explode(cx, cy, cz, 3);
+            scene.remove(ent.mesh); entities.splice(i, 1); continue;
+          }
+        } else {
+          if (ent.fuse >= 0) ent.fuse = -1;
+          ent.mesh.children[0].material.color.setHex(0x36b13a);
+        }
+      }
+    }
+    else if (ent.kind === 'villager') {
+      // wander
+      if (!ent.wanderTimer || ent.wanderTimer <= 0) {
+        ent.wanderDir = new THREE.Vector3(Math.random() - 0.5, 0, Math.random() - 0.5).normalize();
+        ent.wanderTimer = 1 + Math.random() * 2;
+      }
+      ent.wanderTimer -= dt;
+      ent.pos.addScaledVector(ent.wanderDir, 0.8 * dt);
+      ent.mesh.rotation.y = Math.atan2(ent.wanderDir.x, ent.wanderDir.z);
+    }
+
+    // gravity-ish snap-to-ground
+    const groundY = topYAt(ent.pos.x, ent.pos.z);
+    if (ent.pos.y > groundY) ent.pos.y = Math.max(groundY, ent.pos.y - 8 * dt);
+    if (ent.pos.y < groundY) ent.pos.y = groundY;
+  }
+}
+
+// ===== Gamepad analog (controller 0 only) =====
+let gpLook = { rx: 0, ry: 0 };
+let gpPrevPlace = false, gpPrevBreak = false;
+let gpPrevLB = false, gpPrevRB = false;
+
+function pollGamepadAnalog() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = pads[0];
+  if (!gp) { gpLook.rx = gpLook.ry = 0; return; }
+  const dz = 0.18;
+  let rx = gp.axes[2] || 0, ry = gp.axes[3] || 0;
+  if (Math.abs(rx) < dz) rx = 0;
+  if (Math.abs(ry) < dz) ry = 0;
+  gpLook.rx = rx; gpLook.ry = ry;
+
+  const lt = gp.buttons[6] && gp.buttons[6].pressed;
+  const rt = gp.buttons[7] && gp.buttons[7].pressed;
+  if (rt && !gpPrevPlace) primaryAction();
+  if (lt && !gpPrevBreak) breakBlock();
+  gpPrevPlace = rt; gpPrevBreak = lt;
+
+  const lb = gp.buttons[4] && gp.buttons[4].pressed;
+  const rb = gp.buttons[5] && gp.buttons[5].pressed;
+  if (lb && !gpPrevLB) { selectedBlock = (selectedBlock - 1 + BLOCKS.length) % BLOCKS.length; updateHotbar(); }
+  if (rb && !gpPrevRB) { selectedBlock = (selectedBlock + 1) % BLOCKS.length; updateHotbar(); }
+  gpPrevLB = lb; gpPrevRB = rb;
+}
+
+// ===== Update loop =====
+let prevT = performance.now();
+const infoEl = document.getElementById('info');
+const rideInfoEl = document.getElementById('ride-info');
+
+function update(dt) {
+  pollGamepadAnalog();
+
+  player.yaw   -= gpLook.rx * 2.4 * dt;
+  player.pitch -= gpLook.ry * 2.0 * dt;
+  const lim = Math.PI/2 - 0.01;
+  player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+
+  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const right   = new THREE.Vector3( Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  let mv = new THREE.Vector3();
+  if (keys['KeyW'] || keys['w'] || keys['ArrowUp']) mv.add(forward);
+  if (keys['KeyS'] || keys['s'] || keys['ArrowDown']) mv.sub(forward);
+  if (keys['KeyD'] || keys['d'] || keys['ArrowRight']) mv.add(right);
+  if (keys['KeyA'] || keys['a'] || keys['ArrowLeft']) mv.sub(right);
+  let upDown = 0;
+  if (keys['Space'] || keys[' ']) upDown += 1;
+  if (keys['ShiftLeft'] || keys['ShiftRight'] || keys['shift']) upDown -= 1;
+
+  if (player.ridingBoat) {
+    // Steer the boat — horizontal only
+    if (mv.lengthSq() > 0) mv.normalize();
+    const sp = 6;
+    player.ridingBoat.pos.addScaledVector(mv, sp * dt);
+    // boat floats on top of water/ground
+    const gy = topYAt(player.ridingBoat.pos.x, player.ridingBoat.pos.z);
+    player.ridingBoat.pos.y = gy + 0.1;
+    player.ridingBoat.mesh.rotation.y = player.yaw;
+    // player sits in boat
+    player.pos.copy(player.ridingBoat.pos);
+    player.pos.y += 1.2;
+    rideInfoEl.textContent = 'Boat — F to exit';
+  } else {
+    if (mv.lengthSq() > 0) mv.normalize();
+    mv.y = upDown;
+    const isFast = keys['ControlLeft'] || keys['control'];
+    const sp = isFast ? player.fastSpeed : player.speed;
+    player.pos.addScaledVector(mv, sp * dt);
+    rideInfoEl.textContent = '';
+  }
+
+  // Camera follow
+  camera.position.copy(player.pos);
+  const dir = new THREE.Vector3(
+    -Math.sin(player.yaw) * Math.cos(player.pitch),
+     Math.sin(player.pitch),
+    -Math.cos(player.yaw) * Math.cos(player.pitch)
+  );
+  camera.lookAt(player.pos.clone().add(dir));
+
+  tickEntities(dt);
+
+  infoEl.textContent =
+    `Item: ${BLOCKS[selectedBlock].name} (${selectedBlock+1}/${BLOCKS.length})\n` +
+    `Pos: ${player.pos.x.toFixed(1)}, ${player.pos.y.toFixed(1)}, ${player.pos.z.toFixed(1)}\n` +
+    `HP: ${player.hp}/${player.maxHp}  Mobs: ${entities.filter(e=>e.kind!=='arrow'&&e.kind!=='boat').length}`;
+}
+
+function animate() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - prevT) / 1000);
+  prevT = now;
+  if (pointerLocked) update(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ===== Gamepad mapping — ONLY controller 0 =====
+// Custom loop instead of setupGamepad's auto-per-pad iteration, so controller 1 is ignored.
+(function controllerOneOnly() {
+  const prev = {};
+  const mapping = {
+    up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD',
+    a: 'Space', b: 'ShiftLeft',
+    x: 'KeyQ', y: 'KeyE',
+    start: 'Escape',
+  };
+  const SLOTS = [
+    ['a',0],['b',1],['x',2],['y',3],['lb',4],['rb',5],['lt',6],['rt',7],
+    ['back',8],['start',9],['up',12],['down',13],['left',14],['right',15]
+  ];
+  function pair(token) {
+    const m = {
+      Space:{key:' ',code:'Space'}, Enter:{key:'Enter',code:'Enter'}, Escape:{key:'Escape',code:'Escape'},
+      ShiftLeft:{key:'Shift',code:'ShiftLeft'}, ShiftRight:{key:'Shift',code:'ShiftRight'},
+    };
+    if (m[token]) return m[token];
+    if (/^Key[A-Z]$/.test(token)) return { key: token.slice(3).toLowerCase(), code: token };
+    return { key: token, code: token };
+  }
+  function dispatch(type, p) {
+    const ev = new KeyboardEvent(type, { key: p.key, code: p.code, bubbles: true, cancelable: true });
+    window.dispatchEvent(ev); document.dispatchEvent(ev);
+  }
+  function loop() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const gp = pads[0];
+    if (gp) {
+      const state = {};
+      for (const [slot, idx] of SLOTS) {
+        const btn = gp.buttons[idx];
+        state[slot] = !!(btn && btn.pressed);
+      }
+      const ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+      const DZ = 0.35;
+      if (ax < -DZ) state.left = true;
+      if (ax >  DZ) state.right = true;
+      if (ay < -DZ) state.up = true;
+      if (ay >  DZ) state.down = true;
+      for (const slot of Object.keys(state)) {
+        const now = state[slot], was = !!prev[slot];
+        if (now === was) continue;
+        const tok = mapping[slot];
+        if (tok) dispatch(now ? 'keydown' : 'keyup', pair(tok));
+        prev[slot] = now;
+      }
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

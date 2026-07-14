@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Road Racer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d0d1a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Arial Black', Arial, sans-serif;
+  }
+  #title {
+    color: #00CFFF;
+    font-size: 26px;
+    letter-spacing: 8px;
+    text-shadow: 0 0 24px #00CFFF88;
+    margin-bottom: 8px;
+  }
+  canvas {
+    border: 2px solid #00CFFF44;
+    box-shadow: 0 0 40px #00CFFF1a;
+    display: block;
+  }
+</style>
+</head>
+<body>
+<div id="title">&#x1F3C1; ROAD RACER &#x1F3C1;</div>
+<canvas id="c"></canvas>
+<script>
+// ====================================================
+//  ROAD RACER  |  Side-scrolling  |  5 AI  |  12 Laps
+// ====================================================
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+canvas.width  = 920;
+canvas.height = 490;
+const W = canvas.width, H = canvas.height;
+
+// ── Layout ───────────────────────────────────────────
+const ROAD_TOP = 170, ROAD_BOT = 440;
+const ROAD_H   = ROAD_BOT - ROAD_TOP;   // 270
+const N_LANES  = 4;
+const LANE_H   = ROAD_H / N_LANES;      // 67.5
+const PLAYER_X = 160;
+const CAR_W    = 74, CAR_H = 38;
+
+// ── Constants ────────────────────────────────────────
+const TRACK_LEN  = 6000;   // game units per lap
+const N_LAPS     = 12;
+const POS_SCALE  = 0.12;   // pixels per game unit (car positions)
+const ROAD_RATE  = 1.8;    // road scroll rate per player speed unit
+
+// ── State ─────────────────────────────────────────────
+let scrollX    = 0;
+let raceTime   = 0;
+let gameState  = 'countdown';  // 'countdown' | 'racing' | 'finished'
+let countdown  = 3;
+let cdTimer    = 0;
+let winnerName = '';
+let finishTime = 0;
+let lastLaneTm = 0;
+
+// ── Player ────────────────────────────────────────────
+const P = {
+  name: 'YOU', color: '#00DDFF',
+  lane: 1, speed: 0,
+  maxSpd: 14, accel: 0.28, brake: 0.5, friction: 0.09,
+  dist: 0, lap: 1, finished: false
+};
+
+// ── AI Definitions ────────────────────────────────────
+const AI_DEF = [
+  { name: 'RED', color: '#FF3333', baseSpd: 12.4, startDist: -350, lane: 0 },
+  { name: 'GRN', color: '#44DD44', baseSpd: 13.0, startDist: -600, lane: 2 },
+  { name: 'YEL', color: '#FFCC00', baseSpd: 11.9, startDist: -900, lane: 3 },
+  { name: 'PNK', color: '#FF55FF', baseSpd: 13.4, startDist: -450, lane: 1 },
+  { name: 'ORG', color: '#FF8800', baseSpd: 12.7, startDist: -750, lane: 0 },
+];
+
+// ── Spikes ────────────────────────────────────────────
+// lapDist: distance within a lap (0–TRACK_LEN) where spikes appear
+// lane: which lane (0–3)
+const SPIKES = [
+  { lapDist:  700, lane: 0 }, { lapDist:  700, lane: 2 },   // cluster 1 – free lanes 1,3
+  { lapDist: 1400, lane: 1 }, { lapDist: 1400, lane: 3 },   // cluster 2 – free lanes 0,2
+  { lapDist: 2100, lane: 0 }, { lapDist: 2100, lane: 1 },   // cluster 3 – free lanes 2,3
+  { lapDist: 2900, lane: 2 },                                // cluster 4 – free lanes 0,1,3
+  { lapDist: 3600, lane: 1 }, { lapDist: 3600, lane: 3 },   // cluster 5 – free lanes 0,2
+  { lapDist: 4300, lane: 0 }, { lapDist: 4300, lane: 3 },   // cluster 6 – free lanes 1,2
+  { lapDist: 5000, lane: 1 }, { lapDist: 5000, lane: 2 },   // cluster 7 – free lanes 0,3
+  { lapDist: 5600, lane: 3 },                                // cluster 8 – free lanes 0,1,2
+];
+
+let spikeHitTimer  = 0;  // countdown after hitting a spike (prevents repeated hits)
+
+// ── Cannonballs ───────────────────────────────────────
+let cannonballs      = [];   // active projectiles
+let cannonPuffs      = [];   // smoke puffs at cannon mouth
+let cannonSpawnTimer = 2.5;  // time until next shot
+let cannonHitTimer   = 0;    // screen-flash countdown after hit
+
+const CANNON_SPEED    = 480; // pixels per second
+const CANNON_INTERVAL = 2.2; // base seconds between shots
+
+function spawnCannonball() {
+  const lane     = Math.floor(Math.random() * N_LANES);
+  const fromLeft = Math.random() > 0.5;
+  cannonballs.push({ x: fromLeft ? -28 : W + 28, lane, vx: fromLeft ? CANNON_SPEED : -CANNON_SPEED });
+  cannonPuffs.push({ x: fromLeft ? 0 : W, y: laneY(lane), timer: 0.5 });
+}
+
+let ais;
+function initAIs() {
+  ais = AI_DEF.map(d => ({
+    ...d, speed: d.baseSpd,
+    dist: d.startDist, lap: 1,
+    finished: false,
+    laneTm: Math.random() * 2.5
+  }));
+}
+initAIs();
+
+// ── Scenery ───────────────────────────────────────────
+const SCENE = Array.from({ length: 80 }, (_, i) => ({
+  gx:   i * 140 + (Math.random() * 60 - 30),
+  top:  Math.random() > 0.5,
+  kind: Math.random() > 0.3 ? 'tree' : (Math.random() > 0.5 ? 'rock' : 'cactus'),
+  sz:   20 + Math.random() * 24
+}));
+
+// ── Input ─────────────────────────────────────────────
+const K = {};
+window.addEventListener('keydown', e => { K[e.code] = true;  e.preventDefault(); });
+window.addEventListener('keyup',   e => { K[e.code] = false; });
+
+// ── Helpers ───────────────────────────────────────────
+const laneY    = l   => ROAD_TOP + LANE_H * l + LANE_H / 2;
+const totalDst = obj => (obj.lap - 1) * TRACK_LEN + obj.dist;
+const clamp    = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function ordinal(n) {
+  const s = ['th','st','nd','rd'], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+function getPos() {
+  let p = 1;
+  const pd = totalDst(P);
+  ais.forEach(ai => { if (totalDst(ai) > pd) p++; });
+  return p;
+}
+
+function tryFinish(entity, name) {
+  if (!entity.finished) {
+    entity.finished = true;
+    if (gameState === 'racing') {
+      winnerName = name;
+      finishTime = raceTime;
+      gameState  = 'finished';
+    }
+  }
+}
+
+// ── Draw: Background ──────────────────────────────────
+function drawBg() {
+  // Sky gradient
+  const sg = ctx.createLinearGradient(0, 0, 0, ROAD_TOP);
+  sg.addColorStop(0, '#070720');
+  sg.addColorStop(1, '#1a4a7a');
+  ctx.fillStyle = sg;
+  ctx.fillRect(0, 0, W, ROAD_TOP);
+
+  // Stars (stable positions)
+  for (let i = 0; i < 90; i++) {
+    const sx = (i * 137.5) % W;
+    const sy = (i * 79.3)  % (ROAD_TOP - 20);
+    ctx.globalAlpha = 0.35 + (i % 5) * 0.12;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(sx, sy, i % 4 === 0 ? 1.2 : 0.7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Moon
+  ctx.fillStyle = '#FFFBE0';
+  ctx.beginPath();
+  ctx.arc(820, 38, 22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#1a4a7a';
+  ctx.beginPath();
+  ctx.arc(832, 33, 20, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Distant hills
+  ctx.fillStyle = '#0d2a44';
+  for (let i = 0; i < 8; i++) {
+    const base = i * 130;
+    const sx   = ((base - scrollX * 0.08) % 1040 + 1040) % 1040;
+    const ht   = 35 + (i % 3) * 20;
+    ctx.beginPath();
+    ctx.moveTo(sx - 75, ROAD_TOP);
+    ctx.lineTo(sx,      ROAD_TOP - ht);
+    ctx.lineTo(sx + 75, ROAD_TOP);
+    ctx.fill();
+  }
+
+  // Grass strips
+  ctx.fillStyle = '#1f5c1f';
+  ctx.fillRect(0, ROAD_TOP - 20, W, 20);
+  ctx.fillRect(0, ROAD_BOT,      W, H - ROAD_BOT);
+}
+
+// ── Draw: Road ────────────────────────────────────────
+function drawRoad() {
+  // Asphalt
+  ctx.fillStyle = '#383838';
+  ctx.fillRect(0, ROAD_TOP, W, ROAD_H);
+
+  // Rumble strips
+  const rw = 18, rp = rw * 2;
+  const ro = scrollX % rp;
+  for (let x = -rp + ro; x < W + rp; x += rp) {
+    ctx.fillStyle = '#CC2222';
+    ctx.fillRect(x, ROAD_TOP - 18, rw, 18);
+    ctx.fillRect(x, ROAD_BOT,      rw, 18);
+  }
+
+  // Dashed lane dividers
+  const dashLen = 55, dashGap = 40, period = dashLen + dashGap;
+  const off = scrollX % period;
+  ctx.setLineDash([dashLen, dashGap]);
+  ctx.lineDashOffset = -off;
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+  ctx.lineWidth = 2;
+  for (let l = 1; l < N_LANES; l++) {
+    const y = ROAD_TOP + LANE_H * l;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Solid road edges
+  ctx.strokeStyle = '#ccc';
+  ctx.lineWidth = 3;
+  [ROAD_TOP, ROAD_BOT].forEach(y => {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  });
+
+  // Speed streaks — fast horizontal blur lines across the asphalt
+  if (P.speed > 2) {
+    const intensity = clamp(P.speed / P.maxSpd, 0, 1);
+    const nStreaks = Math.floor(14 + intensity * 22);
+    for (let i = 0; i < nStreaks; i++) {
+      const seed   = (i * 197.3 + scrollX * 0.6) % 1;
+      const sy     = ROAD_TOP + 6 + seed * (ROAD_H - 12);
+      const len    = 60 + intensity * 140 + (i % 5) * 20;
+      const sxBase = (i * 313.7 - scrollX * (1.4 + intensity * 2.2)) % (W + 220);
+      const sx     = ((sxBase % (W + 220)) + (W + 220)) % (W + 220) - 110;
+      const alpha  = 0.10 + intensity * 0.35 * (0.4 + (i % 3) * 0.2);
+      ctx.fillStyle = `rgba(230,230,255,${alpha})`;
+      ctx.fillRect(sx, sy, len, 1.5);
+    }
+  }
+}
+
+// ── Draw: Scenery ─────────────────────────────────────
+function drawScenery() {
+  const period = 80 * 140;
+  SCENE.forEach(s => {
+    const sx = ((s.gx - scrollX * 0.82) % period + period) % period - 100;
+    if (sx < -80 || sx > W + 80) return;
+    const by   = s.top ? ROAD_TOP - 20 : ROAD_BOT;
+    const flip = s.top ? -1 : 1;
+
+    if (s.kind === 'tree') {
+      ctx.fillStyle = '#4a2008';
+      ctx.fillRect(sx - 4, by, 8, flip * s.sz * 0.5);
+      ctx.fillStyle = '#1a5a1a';
+      ctx.beginPath();
+      ctx.arc(sx, by + flip * s.sz * 0.45, s.sz * 0.65, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (s.kind === 'rock') {
+      ctx.fillStyle = '#6a6a6a';
+      ctx.beginPath();
+      ctx.ellipse(sx, by + flip * s.sz * 0.25, s.sz * 0.7, s.sz * 0.38, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // cactus
+      ctx.fillStyle = '#2a7a2a';
+      ctx.fillRect(sx - 4, by, 8, flip * s.sz);
+      ctx.fillRect(sx - 16, by + flip * s.sz * 0.4, 12, 5);
+      ctx.fillRect(sx + 4,  by + flip * s.sz * 0.3, 12, 5);
+    }
+  });
+}
+
+// ── Draw: Cannonballs ─────────────────────────────────
+function drawCannonballs() {
+  // Cannon puffs at road edges
+  cannonPuffs.forEach(p => {
+    const a = p.timer * 2;
+    const r = 28 * (1 - p.timer * 1.5) + 10;
+    ctx.fillStyle = `rgba(220,180,80,${a * 0.7})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgba(255,255,200,${a * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Cannonball projectiles
+  cannonballs.forEach(b => {
+    const cx = b.x, cy = laneY(b.lane), r = 13;
+    const trailDir = b.vx > 0 ? -1 : 1;
+
+    // Smoke trail
+    for (let i = 1; i <= 5; i++) {
+      ctx.fillStyle = `rgba(160,140,100,${0.18 - i * 0.03})`;
+      ctx.beginPath();
+      ctx.arc(cx + trailDir * i * 16, cy + (Math.random() - 0.5) * 4, r - i * 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.ellipse(cx + 4, cy + r + 4, r * 0.75, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Ball body (radial gradient)
+    const gr = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.35, r * 0.05, cx, cy, r);
+    gr.addColorStop(0,   '#999');
+    gr.addColorStop(0.4, '#333');
+    gr.addColorStop(1,   '#0a0a0a');
+    ctx.fillStyle = gr;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Shine
+    ctx.fillStyle = 'rgba(255,255,255,0.38)';
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.32, cy - r * 0.32, r * 0.32, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Fire glow at back
+    const fx = cx + trailDir * (r - 2);
+    const fg = ctx.createRadialGradient(fx, cy, 0, fx, cy, 10);
+    fg.addColorStop(0,   '#FFFF88');
+    fg.addColorStop(0.4, '#FF8800');
+    fg.addColorStop(1,   'rgba(255,80,0,0)');
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.arc(fx, cy, 12, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // "BOOM!" text on hit
+  if (cannonHitTimer > 0.25) {
+    const scale = 1 + (1 - cannonHitTimer) * 1.5;
+    ctx.save();
+    ctx.translate(PLAYER_X, laneY(P.lane) - 50);
+    ctx.scale(scale, scale);
+    ctx.fillStyle = `rgba(255,200,0,${cannonHitTimer * 1.5})`;
+    ctx.font = 'bold 36px Arial Black, Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('BOOM!', 0, 0);
+    ctx.restore();
+  }
+}
+
+// ── Draw: Spikes ──────────────────────────────────────
+function drawSpikes() {
+  const pd = P.dist;
+
+  SPIKES.forEach(spike => {
+    // Render spike in previous, current, and next lap windows
+    for (let lapOff = -1; lapOff <= 1; lapOff++) {
+      const distFromPlayer = spike.lapDist + lapOff * TRACK_LEN - pd;
+      const sx = PLAYER_X + distFromPlayer * POS_SCALE;
+      if (sx < -60 || sx > W + 60) continue;
+
+      const sy    = laneY(spike.lane);
+      const sw    = 48;   // strip width
+      const sh    = 11;   // strip height
+      const nPts  = 7;    // number of spike points
+      const ptW   = sw / nPts;
+
+      // Warning glow behind strip
+      const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, 55);
+      grd.addColorStop(0, 'rgba(255,60,0,0.25)');
+      grd.addColorStop(1, 'rgba(255,60,0,0)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(sx - 55, sy - 30, 110, 60);
+
+      // Base strip — alternating orange/black chevrons
+      for (let i = 0; i < nPts; i++) {
+        ctx.fillStyle = i % 2 === 0 ? '#FF5500' : '#1a0000';
+        ctx.fillRect(sx - sw / 2 + i * ptW, sy - sh / 2, ptW, sh);
+      }
+
+      // Spike triangles (pointing upward)
+      for (let i = 0; i < nPts; i++) {
+        const tx = sx - sw / 2 + i * ptW + ptW / 2;
+        ctx.fillStyle = '#FF2200';
+        ctx.strokeStyle = '#FF8800';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(tx - ptW / 2 + 1, sy + sh / 2);
+        ctx.lineTo(tx,               sy - sh / 2 - 11);
+        ctx.lineTo(tx + ptW / 2 - 1, sy + sh / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // "SPIKES" warning text ahead of the strip
+      if (distFromPlayer > 0 && distFromPlayer < 800) {
+        const alpha = Math.min(1, (800 - distFromPlayer) / 400);
+        ctx.fillStyle = `rgba(255, 200, 0, ${alpha * 0.9})`;
+        ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('SPIKES!', sx, sy - sh / 2 - 18);
+      }
+    }
+  });
+}
+
+// ── Draw: Finish Line ─────────────────────────────────
+function drawFinishLine() {
+  const dist2go = TRACK_LEN - P.dist;
+  if (dist2go < 0) return;
+  const fx = PLAYER_X + dist2go * POS_SCALE;
+  if (fx < -50 || fx > W + 50) return;
+
+  const tSz = 22;
+  for (let col = 0; col < 3; col++) {
+    for (let row = 0; row <= Math.ceil(ROAD_H / tSz); row++) {
+      ctx.fillStyle = (col + row) % 2 === 0 ? '#000' : '#fff';
+      ctx.fillRect(fx - 33 + col * tSz, ROAD_TOP + row * tSz, tSz, tSz);
+    }
+  }
+  if (fx > 60 && fx < W - 60) {
+    ctx.fillStyle = '#FFCC00';
+    ctx.font = 'bold 13px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('FINISH', fx - 10, ROAD_TOP - 28);
+  }
+}
+
+// ── Draw: Car ─────────────────────────────────────────
+function drawCar(x, y, color, isPlayer, name) {
+  const hw = CAR_W / 2, hh = CAR_H / 2;
+  const lx = x - hw, rx = x + hw;
+
+  // Drop shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(x + 4, y + hh + 5, hw * 0.75, 7, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(lx, y - hh, CAR_W, CAR_H, 8);
+  ctx.fill();
+
+  // Dark stripe across middle
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.fillRect(lx + 8, y - hh + 3, CAR_W - 16, CAR_H - 6);
+
+  // Windshield (front = right side)
+  ctx.fillStyle = 'rgba(160,225,255,0.82)';
+  ctx.beginPath();
+  ctx.roundRect(rx - 28, y - hh + 5, 22, CAR_H - 10, 4);
+  ctx.fill();
+
+  // Headlights (front)
+  ctx.fillStyle = '#FFEE88';
+  ctx.fillRect(rx - 5, y - hh + 4, 5, 9);
+  ctx.fillRect(rx - 5, y + hh - 13, 5, 9);
+
+  // Taillights (rear)
+  ctx.fillStyle = '#FF3322';
+  ctx.fillRect(lx, y - hh + 4, 5, 9);
+  ctx.fillRect(lx, y + hh - 13, 5, 9);
+
+  // Wheels
+  [[lx + 5, y - hh - 4], [rx - 17, y - hh - 4],
+   [lx + 5, y + hh - 2], [rx - 17, y + hh - 2]].forEach(([wx, wy]) => {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(wx, wy, 12, 6);
+    ctx.fillStyle = '#3a3a3a';
+    ctx.fillRect(wx + 3, wy + 1, 6, 4);
+  });
+
+  // Name tag
+  ctx.fillStyle = isPlayer ? '#00DDFF' : '#fff';
+  ctx.font = 'bold 11px monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowColor = '#000';
+  ctx.shadowBlur = 4;
+  ctx.fillText(name, x, y - hh - 8);
+  ctx.shadowBlur = 0;
+
+  // Exhaust puffs + speed streaks behind every car
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = `rgba(200,200,210,${0.30 - i * 0.05})`;
+    ctx.beginPath();
+    ctx.arc(lx - 8 - i * 9, y + (Math.random() - 0.5) * 10, 6 - i * 1.0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Horizontal speed lines streaming back from the car
+  for (let i = 0; i < 4; i++) {
+    const yOff = (i - 1.5) * 7;
+    ctx.fillStyle = `rgba(255,255,255,${0.35 - i * 0.06})`;
+    ctx.fillRect(lx - 14 - i * 18, y + yOff, 22 + i * 6, 1.4);
+  }
+}
+
+// ── Draw: HUD ─────────────────────────────────────────
+function drawHUD() {
+  // Panel
+  ctx.fillStyle = 'rgba(0,0,0,0.76)';
+  ctx.beginPath();
+  ctx.roundRect(10, 10, 205, 195, 8);
+  ctx.fill();
+  ctx.strokeStyle = '#00CFFF';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.roundRect(10, 10, 205, 195, 8);
+  ctx.stroke();
+
+  const spd  = Math.round(P.speed * 24);
+  const rows = [
+    `SPEED  ${String(spd).padStart(3)} km/h`,
+    `LAP    ${clamp(P.lap, 1, N_LAPS)} / ${N_LAPS}`,
+    `POS    ${ordinal(getPos())} of ${ais.length + 1}`,
+    `TIME   ${raceTime.toFixed(1)}s`,
+  ];
+  ctx.fillStyle = '#00CFFF';
+  ctx.font = 'bold 13px monospace';
+  ctx.textAlign = 'left';
+  rows.forEach((r, i) => ctx.fillText(r, 22, 42 + i * 26));
+
+  // Speed bar label
+  ctx.fillStyle = '#888';
+  ctx.font = '10px monospace';
+  ctx.fillText('THROTTLE', 22, 152);
+
+  // Speed bar
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(10, 156, 205, 9);
+  const pct = P.speed / P.maxSpd;
+  ctx.fillStyle = pct > 0.85 ? '#ff0' : pct > 0.5 ? '#0f0' : '#08f';
+  ctx.fillRect(10, 156, pct * 205, 9);
+
+  // Minimap label
+  ctx.fillStyle = '#888';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('LAP PROGRESS', 22, 178);
+
+  // Minimap bar
+  const mmX = 10, mmY = 180, mmW = 205, mmH = 13;
+  ctx.fillStyle = '#111';
+  ctx.fillRect(mmX, mmY, mmW, mmH);
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(mmX, mmY, mmW, mmH);
+
+  // AI dots on minimap
+  ais.forEach(ai => {
+    const p = ((ai.dist % TRACK_LEN) + TRACK_LEN) % TRACK_LEN / TRACK_LEN;
+    ctx.fillStyle = ai.color;
+    ctx.fillRect(mmX + p * mmW - 2, mmY + 2, 4, mmH - 4);
+  });
+  // Player dot
+  const pp = (P.dist % TRACK_LEN) / TRACK_LEN;
+  ctx.fillStyle = '#00DDFF';
+  ctx.fillRect(mmX + pp * mmW - 3, mmY, 6, mmH);
+
+  // Controls hint
+  ctx.fillStyle = 'rgba(255,255,255,0.38)';
+  ctx.font = '11px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('\u2191/W: Throttle    \u2193/S: Brake', 10, H - 28);
+  ctx.fillText('\u2190/A | \u2192/D: Change Lane     SPACE: Restart', 10, H - 12);
+}
+
+// ── Draw: Countdown Overlay ───────────────────────────
+function drawCountdown() {
+  ctx.fillStyle = 'rgba(0,0,0,0.62)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#00CFFF';
+  ctx.font = 'bold 32px Arial Black, Arial';
+  ctx.fillText('ROAD RACER', W / 2, H / 2 - 85);
+
+  ctx.fillStyle = '#888';
+  ctx.font = '18px Arial';
+  ctx.fillText(`5 opponents  \u2022  ${N_LAPS} laps  \u2022  Side-scroll`, W / 2, H / 2 - 50);
+
+  ctx.fillStyle = '#FFCC00';
+  ctx.font = 'bold 100px Arial Black, Arial';
+  ctx.fillText(countdown > 0 ? String(countdown) : 'GO!', W / 2, H / 2 + 38);
+
+  ctx.fillStyle = '#666';
+  ctx.font = '16px Arial';
+  ctx.fillText('Arrow keys or WASD to drive', W / 2, H / 2 + 82);
+}
+
+// ── Draw: Finish Screen ───────────────────────────────
+function drawFinishScreen() {
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  const won = winnerName === 'YOU';
+  ctx.fillStyle = won ? '#FFCC00' : '#FF4444';
+  ctx.font = 'bold 68px Arial Black, Arial';
+  ctx.fillText(won ? 'YOU WIN!' : winnerName + ' WINS!', W / 2, H / 2 - 55);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '24px Arial';
+  ctx.fillText(
+    `Your finish: ${ordinal(getPos())}   \u2022   Race time: ${finishTime.toFixed(1)}s`,
+    W / 2, H / 2 + 15
+  );
+
+  ctx.fillStyle = '#888';
+  ctx.font = '18px Arial';
+  ctx.fillText('Press SPACE to race again', W / 2, H / 2 + 62);
+}
+
+// ── Update ────────────────────────────────────────────
+function update(dt) {
+  // Countdown phase
+  if (gameState === 'countdown') {
+    cdTimer += dt;
+    if (cdTimer >= 1) { cdTimer -= 1; countdown--; }
+    if (countdown < 0) { gameState = 'racing'; }
+    return;
+  }
+
+  // Finished phase
+  if (gameState === 'finished') {
+    if (K['Space']) resetGame();
+    return;
+  }
+
+  // Racing phase
+  raceTime += dt;
+  const now = performance.now();
+
+  // Player throttle / brake
+  if      (K['ArrowUp']   || K['KeyW']) P.speed = Math.min(P.maxSpd, P.speed + P.accel);
+  else if (K['ArrowDown'] || K['KeyS']) P.speed = Math.max(0, P.speed - P.brake);
+  else                                   P.speed = Math.max(0, P.speed - P.friction);
+
+  // Lane changes (debounced)
+  if (now - lastLaneTm > 270) {
+    if      (K['ArrowLeft']  || K['KeyA']) { P.lane = Math.max(0, P.lane - 1);           lastLaneTm = now; }
+    else if (K['ArrowRight'] || K['KeyD']) { P.lane = Math.min(N_LANES - 1, P.lane + 1); lastLaneTm = now; }
+  }
+
+  P.dist  += P.speed;
+  scrollX += P.speed * ROAD_RATE;
+
+  // ── Cannonball spawn ──
+  cannonSpawnTimer -= dt;
+  if (cannonSpawnTimer <= 0) {
+    cannonSpawnTimer = CANNON_INTERVAL + Math.random() * 1.8;
+    spawnCannonball();
+    if (Math.random() > 0.55) {
+      // Occasionally fire a second ball in a different lane
+      setTimeout(() => { if (gameState === 'racing') spawnCannonball(); }, 500);
+    }
+  }
+
+  // Move cannonballs + collision
+  cannonballs = cannonballs.filter(b => b.x > -80 && b.x < W + 80);
+  cannonballs.forEach(b => {
+    b.x += b.vx * dt;
+
+    // Player collision
+    if (cannonHitTimer <= 0 && Math.abs(b.x - PLAYER_X) < 24 && P.lane === b.lane) {
+      P.speed        = Math.max(0, P.speed - 7);
+      cannonHitTimer = 0.7;
+    }
+
+    // AI collision
+    ais.forEach(ai => {
+      const aiSX = PLAYER_X + (totalDst(ai) - totalDst(P)) * POS_SCALE;
+      if (Math.abs(b.x - aiSX) < 24 && ai.lane === b.lane) {
+        ai.speed = Math.max(3, ai.speed - 3);
+      }
+    });
+  });
+
+  // Decay timers
+  if (cannonHitTimer > 0) cannonHitTimer -= dt;
+  cannonPuffs = cannonPuffs.filter(p => p.timer > 0);
+  cannonPuffs.forEach(p => { p.timer -= dt; });
+
+  // Spike collision – player
+  if (spikeHitTimer <= 0) {
+    for (const spike of SPIKES) {
+      for (let lapOff = -1; lapOff <= 1; lapOff++) {
+        const d  = spike.lapDist + lapOff * TRACK_LEN - P.dist;
+        const sx = PLAYER_X + d * POS_SCALE;
+        if (Math.abs(sx - PLAYER_X) < 22 && P.lane === spike.lane) {
+          P.speed      = Math.max(0, P.speed - 6);
+          spikeHitTimer = 0.6;   // 0.6s grace period before another hit
+          break;
+        }
+      }
+      if (spikeHitTimer > 0) break;
+    }
+  }
+  if (spikeHitTimer > 0) spikeHitTimer -= dt;
+
+  // Spike collision – AI cars
+  ais.forEach(ai => {
+    const aiLapDist = ((ai.dist % TRACK_LEN) + TRACK_LEN) % TRACK_LEN;
+    for (const spike of SPIKES) {
+      if (Math.abs(aiLapDist - spike.lapDist) < 6 && ai.lane === spike.lane) {
+        ai.speed = Math.max(3, ai.speed - 2.5);
+      }
+    }
+  });
+
+  // Player lap check
+  if (P.dist >= TRACK_LEN) {
+    P.dist -= TRACK_LEN;
+    P.lap++;
+    if (P.lap > N_LAPS) tryFinish(P, 'YOU');
+  }
+
+  // AI update
+  ais.forEach((ai, idx) => {
+    if (ai.finished) return;
+
+    // Speed with variation + rubber-banding
+    const pd  = totalDst(P);
+    const aid = totalDst(ai);
+    let spd = ai.baseSpd + Math.sin(raceTime * 0.35 + idx * 1.57) * 1.6;
+    if (aid > pd + 2000) spd *= 0.90;
+    if (aid < pd - 2500) spd *= 1.18;
+    ai.speed = clamp(spd, 6, 16);
+    ai.dist += ai.speed;
+
+    // Lane changes
+    ai.laneTm -= dt;
+    if (ai.laneTm <= 0) {
+      ai.laneTm = 1.8 + Math.random() * 3.5;
+      const free = [0, 1, 2, 3].filter(l => l !== P.lane || Math.random() > 0.35);
+      ai.lane = free[Math.floor(Math.random() * free.length)];
+    }
+
+    // Collision with player
+    const aiSX = PLAYER_X + (totalDst(ai) - totalDst(P)) * POS_SCALE;
+    if (Math.abs(aiSX - PLAYER_X) < CAR_W * 0.8 && ai.lane === P.lane) {
+      P.speed  = Math.max(0, P.speed - 2.5);
+      ai.lane  = (ai.lane + 1 + Math.floor(Math.random() * 3)) % N_LANES;
+    }
+
+    // AI lap check
+    if (ai.dist >= TRACK_LEN) {
+      ai.dist -= TRACK_LEN;
+      ai.lap++;
+      if (ai.lap > N_LAPS) tryFinish(ai, ai.name);
+    }
+  });
+}
+
+// ── Render ────────────────────────────────────────────
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  drawBg();
+  drawScenery();
+  drawRoad();
+  drawSpikes();
+  drawFinishLine();
+
+  // Red flash on spike hit
+  if (spikeHitTimer > 0) {
+    ctx.fillStyle = `rgba(255, 0, 0, ${spikeHitTimer * 0.35})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  // Orange flash on cannon hit
+  if (cannonHitTimer > 0) {
+    ctx.fillStyle = `rgba(255, 140, 0, ${cannonHitTimer * 0.38})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Collect visible cars, sort by lane (higher lane drawn last = visually in front)
+  const playerTD = totalDst(P);
+  const cars = [
+    { x: PLAYER_X, y: laneY(P.lane), color: P.color, isPlayer: true,  name: P.name, lane: P.lane },
+    ...ais.map(ai => ({
+      x:        PLAYER_X + (totalDst(ai) - playerTD) * POS_SCALE,
+      y:        laneY(ai.lane),
+      color:    ai.color,
+      isPlayer: false,
+      name:     ai.name,
+      lane:     ai.lane
+    }))
+  ].filter(c => c.x > -CAR_W && c.x < W + CAR_W);
+
+  cars.sort((a, b) => a.lane - b.lane);
+  cars.forEach(c => drawCar(c.x, c.y, c.color, c.isPlayer, c.name));
+
+  drawCannonballs();  // drawn over cars so they're always visible
+
+  drawHUD();
+  if (gameState === 'countdown') drawCountdown();
+  if (gameState === 'finished')  drawFinishScreen();
+}
+
+// ── Reset ─────────────────────────────────────────────
+function resetGame() {
+  Object.assign(P, { lane: 1, speed: 0, dist: 0, lap: 1, finished: false });
+  initAIs();
+  scrollX = 0; raceTime = 0; countdown = 3; cdTimer = 0;
+  winnerName = ''; finishTime = 0; lastLaneTm = 0; spikeHitTimer = 0;
+  cannonballs = []; cannonPuffs = []; cannonSpawnTimer = 2.5; cannonHitTimer = 0;
+  gameState = 'countdown';
+}
+
+// ── Game Loop ─────────────────────────────────────────
+let lastT = null;
+function loop(ts) {
+  if (!lastT) lastT = ts;
+  const dt = Math.min((ts - lastT) / 1000, 0.05);
+  lastT = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+    a: 'Space', b: 'Space', start: 'Space'
+  }]
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fix the Rainbow!</title>
+<style>
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    color: #fff;
+    margin: 0;
+    padding: 20px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 {
+    margin: 10px 0;
+    font-size: 2.5em;
+    background: linear-gradient(90deg, red, orange, yellow, #90ee90, green, #87ceeb, blue, #00008b, purple, violet);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  p.instructions { opacity: 0.85; margin: 0 0 20px; }
+  #rainbow {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: min(420px, 92vw);
+    padding: 14px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .band {
+    padding: 14px 18px;
+    border-radius: 8px;
+    cursor: grab;
+    font-weight: 600;
+    color: #111;
+    user-select: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: transform 0.15s, box-shadow 0.15s;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  }
+  .band:hover { transform: translateX(4px); }
+  .band.dragging { opacity: 0.4; cursor: grabbing; }
+  .band.over { box-shadow: 0 0 0 3px #fff inset; }
+  .band .grip { opacity: 0.5; font-size: 1.2em; }
+  .band.correct {
+    box-shadow: 0 0 0 3px #00ff88 inset, 0 2px 6px rgba(0,0,0,0.3);
+  }
+  #controls { margin-top: 20px; display: flex; gap: 12px; }
+  button {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 1em;
+    font-weight: 600;
+    cursor: pointer;
+    background: #fff;
+    color: #16213e;
+    transition: transform 0.1s, background 0.15s;
+  }
+  button:hover { transform: scale(1.05); background: #ffeb3b; }
+  #status {
+    margin-top: 18px;
+    font-size: 1.3em;
+    min-height: 1.5em;
+    font-weight: 600;
+  }
+  #status.win { color: #00ff88; animation: pulse 1s infinite; }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+  }
+  #moves { opacity: 0.7; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>Fix the Rainbow!</h1>
+  <p class="instructions">Drag the colors into the correct rainbow order (red &rarr; violet).</p>
+  <div id="rainbow"></div>
+  <div id="controls">
+    <button onclick="shuffle()">Shuffle</button>
+    <button onclick="check()">Check</button>
+  </div>
+  <div id="status"></div>
+  <div id="moves">Moves: 0</div>
+
+<script>
+const COLORS = [
+  { name: 'red',         bg: '#ff3030' },
+  { name: 'orange',      bg: '#ff9020' },
+  { name: 'yellow',      bg: '#ffeb3b' },
+  { name: 'light green', bg: '#a5e34b' },
+  { name: 'green',       bg: '#22aa33' },
+  { name: 'light blue',  bg: '#5fd3f0' },
+  { name: 'blue',        bg: '#2266ff' },
+  { name: 'dark blue',   bg: '#000a8b' },
+  { name: 'purple',      bg: '#8a2be2' },
+  { name: 'violet',      bg: '#d040d0' }
+];
+
+let order = [];
+let moves = 0;
+const container = document.getElementById('rainbow');
+const status = document.getElementById('status');
+const movesEl = document.getElementById('moves');
+
+function render() {
+  container.innerHTML = '';
+  order.forEach((idx, pos) => {
+    const c = COLORS[idx];
+    const div = document.createElement('div');
+    div.className = 'band';
+    div.draggable = true;
+    div.dataset.pos = pos;
+    div.style.background = c.bg;
+    div.style.color = (idx === 7 || idx === 4) ? '#fff' : '#111';
+    div.innerHTML = `<span>${c.name}</span><span class="grip">&#9776;</span>`;
+    if (idx === pos) div.classList.add('correct');
+
+    div.addEventListener('dragstart', e => {
+      div.classList.add('dragging');
+      e.dataTransfer.setData('text/plain', pos);
+    });
+    div.addEventListener('dragend', () => div.classList.remove('dragging'));
+    div.addEventListener('dragover', e => { e.preventDefault(); div.classList.add('over'); });
+    div.addEventListener('dragleave', () => div.classList.remove('over'));
+    div.addEventListener('drop', e => {
+      e.preventDefault();
+      div.classList.remove('over');
+      const from = parseInt(e.dataTransfer.getData('text/plain'));
+      const to = pos;
+      if (from === to) return;
+      const [moved] = order.splice(from, 1);
+      order.splice(to, 0, moved);
+      moves++;
+      movesEl.textContent = `Moves: ${moves}`;
+      status.textContent = '';
+      status.className = '';
+      render();
+    });
+    container.appendChild(div);
+  });
+}
+
+function shuffle() {
+  order = COLORS.map((_, i) => i);
+  do {
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+  } while (order.every((v, i) => v === i));
+  moves = 0;
+  movesEl.textContent = 'Moves: 0';
+  status.textContent = '';
+  status.className = '';
+  render();
+}
+
+function check() {
+  if (order.every((v, i) => v === i)) {
+    status.textContent = `Perfect rainbow! ${moves} moves`;
+    status.className = 'win';
+  } else {
+    const wrong = order.filter((v, i) => v !== i).length;
+    status.textContent = `${wrong} colors still out of place`;
+    status.className = '';
+  }
+}
+
+// Initial puzzle: red, orange, green, yellow, light green, dark blue, light blue, blue, purple, violet
+order = [0, 1, 4, 2, 3, 7, 5, 6, 8, 9];
+render();
+</script>
+</body>
+</html>

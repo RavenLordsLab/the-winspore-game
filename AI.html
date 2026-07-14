@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AI — Build & Battle (2 Players)</title>
+<style>
+  html,body { margin:0; height:100%; background:#0c0f1a; color:#fff; font-family:system-ui, sans-serif;
+         display:flex; flex-direction:column; align-items:center; padding:4px; box-sizing:border-box;
+         user-select:none; overflow:hidden; }
+  h1 { margin:2px; color:#7ef9ff; text-shadow:2px 2px 0 #000, 0 0 14px #1e90ff; font-size:clamp(15px,2.6vw,22px); text-align:center; letter-spacing:2px; }
+  #hud { font-size:clamp(11px,1.8vw,15px); margin:2px; min-height:18px; letter-spacing:1px; text-align:center; }
+  /* keep the 900x560 (≈1.607:1) aspect and shrink to fit both width and height */
+  canvas { background:#0a1120; border:3px solid #23406b; box-shadow:0 0 24px #000, 0 0 30px #1e90ff44; border-radius:8px; touch-action:none;
+           width: min(97vw, calc((100vh - 168px) * 1.6071)); max-width:900px; height:auto; outline:none; }
+  .row { margin:3px; }
+  button { background:#7ef9ff; color:#0c0f1a; border:0; padding:7px 16px; font-weight:bold;
+           font-size:14px; border-radius:6px; cursor:pointer; margin:0 4px; }
+  button:hover { background:#b6fdff; }
+  #legend { font-size:clamp(10px,1.5vw,13px); color:#9bb; max-width:880px; text-align:center; margin-top:2px; line-height:1.45; padding:0 6px; }
+  b.p1 { color:#ff6b6b; } b.p2 { color:#5aa9ff; } b.k { color:#ffd166; }
+</style>
+</head>
+<body>
+<h1>🤖 A I — Build & Battle 🤖</h1>
+<div id="hud"></div>
+<canvas id="game" width="900" height="560" tabindex="0"></canvas>
+<div class="row">
+  <button id="startBtn">START</button>
+</div>
+<div id="legend">
+  Pick a vehicle 🚗🐜⛵🚂 (scroll / triggers), bolt on weapons, then <b class="k">fight each other!</b> — knock out all 10 ❤️.<br>
+  <b class="p1">Player 1 (pad 1)</b>: stick/arrows move, <b class="p1">A</b> = place &amp; SHOOT (hold), <b class="p1">triggers or X·Y</b> switch weapon, <b class="p1">B</b> remove, <b class="p1">Start</b> next.<br>
+  <b class="p2">Player 2 (pad 2)</b>: stick/WASD move, <b class="p2">F</b> = place &amp; SHOOT (hold), <b class="p2">triggers</b> switch weapon, <b class="p2">G</b> remove, <b class="p2">Start</b> next.<br>
+  Ranged weapons fire while you hold SHOOT. Spikes, knives &amp; the 💎 diamond sword hurt on contact!
+</div>
+
+<script src="gamepad.js"></script>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const hudEl = document.getElementById('hud');
+const startBtn = document.getElementById('startBtn');
+const CW = canvas.width, CH = canvas.height;
+
+// ---------- tiny sound ----------
+let AC = null;
+function beep(freq, dur, type, vol) {
+  try {
+    if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type || 'square'; o.frequency.value = freq;
+    g.gain.value = (vol == null ? 0.05 : vol);
+    o.connect(g); g.connect(AC.destination);
+    o.start(); g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + (dur || 0.08));
+    o.stop(AC.currentTime + (dur || 0.08));
+  } catch (e) {}
+}
+
+// ---------- weapons ----------
+const WEAPON_DEFS = [
+  { key:'cannon', name:'Cannon',       icon:'💣', max:20, cd:70, dmg:16, range:900, kind:'cannon', color:'#95a5a6' },
+  { key:'arrow',  name:'Spiky Arrow',  icon:'🏹', max:20, cd:22, dmg:6,  range:900, kind:'arrow',  color:'#e67e22' },
+  { key:'spike',  name:'Spikes',       icon:'🔺', max:20, cd:12, dmg:3,  range:46,  kind:'spike',  color:'#bdc3c7' },
+  { key:'laser',  name:'Laser',        icon:'🔦', max:20, cd:0,  dmg:0.5,range:260, kind:'laser',  color:'#ff2e63' },
+  { key:'gun',    name:'Gun',          icon:'🔫', max:20, cd:6,  dmg:2,  range:900, kind:'gun',    color:'#f1c40f' },
+  { key:'knife',  name:'Knife',        icon:'🔪', max:20, cd:9,  dmg:4,  range:56,  kind:'knife',  color:'#ecf0f1' },
+  { key:'sword',  name:'Diamond Sword',icon:'💎', max:2,  cd:0,  dmg:80, range:74,  kind:'sword',  color:'#00e5ff' },
+];
+const WD = {}; WEAPON_DEFS.forEach(w => WD[w.key] = w);
+
+// ---------- vehicles you can build on ----------
+const VEHICLES = [
+  { key:'car',   name:'Car',   icon:'🚗', w:104, h:64, speed:3.6 },
+  { key:'ant',   name:'Ant',   icon:'🐜', w:86,  h:72, speed:4.0 },
+  { key:'boat',  name:'Boat',  icon:'⛵', w:98,  h:88, speed:2.9 },
+  { key:'train', name:'Train', icon:'🚂', w:120, h:62, speed:2.6 },
+];
+
+// ---------- players ----------
+function makePlayer(id) {
+  return {
+    id,
+    name: 'Player ' + (id+1),
+    color: id === 0 ? '#ff6b6b' : '#5aa9ff',
+    icon:  id === 0 ? '⛩️' : '🚗',
+    w: 96, h: 76, hearts: 10, maxHearts: 10, hpPerHeart: 12, hp: 120, maxhp: 120, speed: 3.0,
+    x: CW/2, y: id === 0 ? CH-120 : 120,
+    mounts: [],
+    inv: {},
+    venom: 0,
+    hitFlash: 0,
+    shake: 0,        // machine trembles when it just lost a heart
+    points: 0,
+  };
+}
+const POINT_TARGET = 1000;   // race for points while you fight!
+function resetPlayerInv(p) { WEAPON_DEFS.forEach(w => p.inv[w.key] = w.max); }
+
+// ---------- game state ----------
+let mode = 'menu';        // menu | build | battle | over
+let players = [];
+let buildIdx = 0;         // whose turn to build
+let selIdx = [0, 0];      // selected weapon per player
+let vehSel = [0, 0];      // selected vehicle per player
+let cursor = { x: CW/2, y: CH/2 };
+let bullets = [];         // {x,y,vx,vy,dmg,r,kind,life,owner,splash,pierce,color}
+let clouds = [];          // venom clouds {x,y,r,life,owner}
+let particles = [];
+let flies = [];
+let frame = 0, winner = -1;
+let keys = {};
+let flashMsg = "", flashTimer = 0;
+
+function buildVehiclePos() { return { x: CW/2, y: CH/2 - 10 }; }
+
+function startNewGame() {
+  players = [makePlayer(0), makePlayer(1)];
+  players.forEach(resetPlayerInv);
+  selIdx = [0, 0];
+  vehSel = [0, 0];
+  buildIdx = 0;
+  mode = 'vehpick';
+  beep(520, 0.1);
+}
+
+// player picked their vehicle -> apply it and move on to building
+function confirmVehicle() {
+  const p = players[buildIdx];
+  const v = VEHICLES[vehSel[buildIdx]];
+  p.veh = v.key; p.icon = v.icon; p.w = v.w; p.h = v.h; p.speed = v.speed;
+  const bp = buildVehiclePos();
+  cursor.x = bp.x; cursor.y = bp.y - 60;
+  mode = 'build';
+  beep(560, 0.12);
+}
+
+function nextBuilder() {
+  if (buildIdx === 0) { buildIdx = 1; mode = 'vehpick'; beep(600, 0.12); }
+  else beginBattle();
+}
+
+function beginBattle() {
+  if (players[0].mounts.length === 0 || players[1].mounts.length === 0) {
+    flashMsg = "Both players need at least one weapon!"; flashTimer = 90;
+    beep(120,0.12,'square',0.06); return;
+  }
+  players[0].x = CW/2; players[0].y = CH-120;
+  players[1].x = CW/2; players[1].y = 120;
+  players.forEach(p => { p.hp = p.maxhp; p.hearts = p.maxHearts; p.venom = 0; p.points = 0; p.shake = 0; p.mounts.forEach(m => { m.used=false; m.t=0; m.fireT=0; }); });
+  bullets = []; clouds = []; particles = []; flies = [];
+  winner = -1;
+  mode = 'battle';
+  beep(440, 0.2, 'sawtooth', 0.05);
+}
+
+// ---------- helpers ----------
+function dist2(ax, ay, bx, by) { const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+function addParticles(x, y, color, n, spd) {
+  for (let i=0;i<n;i++){
+    const a = Math.random()*Math.PI*2, s = Math.random()*(spd||3)+1;
+    particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, life: 20+Math.random()*20, color });
+  }
+}
+function hitVehicle(p, bx, by, br) {
+  // point (with radius) vs vehicle AABB
+  return Math.abs(bx - p.x) < p.w/2 + br && Math.abs(by - p.y) < p.h/2 + br;
+}
+
+// ---------- input ----------
+window.addEventListener('keydown', e => {
+  keys[e.code] = true; handleKey(e.code);
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// during build accept EITHER player's controls (whoever holds a controller)
+const BUILD_LEFT  = ['ArrowLeft','KeyA'], BUILD_RIGHT = ['ArrowRight','KeyD'];
+const BUILD_UP    = ['ArrowUp','KeyW'],   BUILD_DOWN  = ['ArrowDown','KeyS'];
+const BUILD_PLACE = ['Space','KeyF'],     BUILD_REMOVE= ['KeyR','KeyG'];
+const BUILD_PREV  = ['KeyQ','KeyT'],      BUILD_NEXT  = ['KeyE','KeyY'];
+const BUILD_DONE  = ['Enter'];
+
+function handleKey(code) {
+  if (mode === 'menu') { if (code==='Enter'||code==='Space'||code==='KeyF') startNewGame(); return; }
+  if (mode === 'over') { if (code==='Enter'||code==='Space'||code==='KeyF') mode='menu'; return; }
+  if (mode === 'vehpick') {
+    const s = vehSel[buildIdx];
+    if (BUILD_PREV.includes(code) || BUILD_LEFT.includes(code))  { vehSel[buildIdx]=(s+VEHICLES.length-1)%VEHICLES.length; beep(300,0.05); }
+    if (BUILD_NEXT.includes(code) || BUILD_RIGHT.includes(code)) { vehSel[buildIdx]=(s+1)%VEHICLES.length; beep(300,0.05); }
+    if (BUILD_PLACE.includes(code) || BUILD_DONE.includes(code)) confirmVehicle();
+    return;
+  }
+  if (mode === 'build') {
+    const s = selIdx[buildIdx];
+    if (BUILD_PREV.includes(code)) { selIdx[buildIdx] = (s+WEAPON_DEFS.length-1)%WEAPON_DEFS.length; beep(300,0.05); }
+    if (BUILD_NEXT.includes(code)) { selIdx[buildIdx] = (s+1)%WEAPON_DEFS.length; beep(300,0.05); }
+    if (BUILD_PLACE.includes(code)) placeWeapon();
+    if (BUILD_REMOVE.includes(code)) removeWeapon();
+    if (BUILD_DONE.includes(code)) nextBuilder();
+    return;
+  }
+}
+
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  cursor.x = (e.clientX - r.left) * (CW / r.width);
+  cursor.y = (e.clientY - r.top)  * (CH / r.height);
+});
+canvas.addEventListener('mousedown', e => {
+  if (mode === 'build') { if (e.button===0) placeWeapon(); if (e.button===2) removeWeapon(); }
+  else if (mode === 'vehpick') confirmVehicle();
+  else if (mode === 'menu') startNewGame();
+  else if (mode === 'over') mode = 'menu';
+});
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => {
+  if (mode === 'build') { e.preventDefault();
+    selIdx[buildIdx] = (selIdx[buildIdx] + (e.deltaY>0?1:WEAPON_DEFS.length-1)) % WEAPON_DEFS.length; }
+  else if (mode === 'vehpick') { e.preventDefault();
+    vehSel[buildIdx] = (vehSel[buildIdx] + (e.deltaY>0?1:VEHICLES.length-1)) % VEHICLES.length; }
+}, { passive:false });
+
+function placeWeapon() {
+  const p = players[buildIdx];
+  const w = WEAPON_DEFS[selIdx[buildIdx]];
+  if (p.inv[w.key] <= 0) { flashMsg = "Out of "+w.name+"!"; flashTimer=60; beep(120,0.12,'square',0.06); return; }
+  const bp = buildVehiclePos();
+  const dx = cursor.x - bp.x, dy = cursor.y - bp.y;
+  const maxR = Math.max(p.w, p.h) * 0.85;
+  if (Math.abs(dx) > maxR || Math.abs(dy) > maxR) { flashMsg = "Place it ON your machine!"; flashTimer=60; beep(120,0.12,'square',0.06); return; }
+  p.mounts.push({ wx: dx, wy: dy, key: w.key, t:0, fireT:0, spin:0, used:false });
+  p.inv[w.key]--;
+  beep(660,0.06,'square',0.05);
+}
+function removeWeapon() {
+  const p = players[buildIdx];
+  const bp = buildVehiclePos();
+  let bi=-1, bd=30*30;
+  for (let i=0;i<p.mounts.length;i++){
+    const m=p.mounts[i];
+    const d=dist2(cursor.x,cursor.y,bp.x+m.wx,bp.y+m.wy);
+    if (d<bd){bd=d;bi=i;}
+  }
+  if (bi>=0){ p.inv[p.mounts[bi].key]++; p.mounts.splice(bi,1); beep(240,0.06,'square',0.05); }
+}
+
+// gamepad: index 0 -> P1 keys, index 1 -> P2 keys
+setupGamepad({
+  players: [
+    { up:'ArrowUp', down:'ArrowDown', left:'ArrowLeft', right:'ArrowRight',
+      a:'Space',                          // A = place / SHOOT (hold to keep shooting)
+      b:'KeyR',                           // B = remove a weapon
+      x:'KeyQ', y:'KeyE',                 // X / Y = switch weapon
+      lb:'KeyQ', rb:'KeyE',               // shoulder buttons = switch weapon
+      lt:'KeyQ', rt:'KeyE',               // triggers = switch weapon
+      start:'Enter', back:'Enter' },      // Start OR Select = next player / done
+    { up:'KeyW', down:'KeyS', left:'KeyA', right:'KeyD',
+      a:'KeyF', b:'KeyG',
+      x:'KeyT', y:'KeyY',
+      lb:'KeyT', rb:'KeyY',
+      lt:'KeyT', rt:'KeyY',
+      start:'Enter', back:'Enter' },
+  ],
+  mirrorSingle: false
+});
+
+// ---------- update ----------
+function update() {
+  frame++;
+  if (flashTimer > 0) flashTimer--;
+
+  if (mode === 'build') {
+    const s = 5;
+    if (BUILD_LEFT.some(k=>keys[k]))  cursor.x -= s;
+    if (BUILD_RIGHT.some(k=>keys[k])) cursor.x += s;
+    if (BUILD_UP.some(k=>keys[k]))    cursor.y -= s;
+    if (BUILD_DOWN.some(k=>keys[k]))  cursor.y += s;
+    cursor.x = clamp(cursor.x,0,CW); cursor.y = clamp(cursor.y,0,CH);
+    return;
+  }
+  if (mode !== 'battle') return;
+
+  // steer
+  const P1 = players[0], P2 = players[1];
+  steer(P1, 'ArrowLeft','ArrowRight','ArrowUp','ArrowDown');
+  steer(P2, 'KeyA','KeyD','KeyW','KeyS');
+
+  const firing = [ !!keys['Space'], !!keys['KeyF'] ];
+
+  for (let pi=0; pi<2; pi++) {
+    const me = players[pi], foe = players[1-pi];
+    for (const m of me.mounts) {
+      if (m.used) continue;
+      const def = WD[m.key];
+      const mx = me.x + m.wx, my = me.y + m.wy;
+      m.t++; m.spin += 0.3;
+
+      if (def.kind === 'sword') {
+        if (dist2(mx,my,foe.x,foe.y) < (def.range + Math.min(foe.w,foe.h)/2)**2) {
+          swordExplode(mx, my, pi); m.used = true;
+        }
+        continue;
+      }
+      if (def.kind === 'spike') {
+        if (dist2(mx,my,foe.x,foe.y) < (def.range + Math.min(foe.w,foe.h)/2)**2) { damagePlayer(foe, def.dmg); foe.hitFlash=3; }
+        continue;
+      }
+      if (def.kind === 'knife') {
+        if (dist2(mx,my,foe.x,foe.y) < (def.range + Math.min(foe.w,foe.h)/2)**2) {
+          if (m.t % def.cd === 0) { damagePlayer(foe, def.dmg); foe.hitFlash=3; addParticles((mx+foe.x)/2,(my+foe.y)/2,'#fff',3,2); }
+        }
+        continue;
+      }
+      // ranged: only while holding SHOOT
+      if (!firing[pi]) { m.fireT = 0; if (def.kind==='laser') m.beamOn=false; continue; }
+      if (def.kind === 'laser') {
+        if (dist2(mx,my,foe.x,foe.y) < def.range*def.range) { damagePlayer(foe, def.dmg); foe.hitFlash=2; m.beamOn=true; }
+        else m.beamOn=false;
+        continue;
+      }
+      // fireT starts at 0 so the FIRST frame of holding shoots instantly (a tap always fires)
+      if (m.fireT % def.cd === 0) {
+        const ang = Math.atan2(foe.y-my, foe.x-mx);
+        const spd = def.kind==='gun'?9 : def.kind==='arrow'?8 : 5.5;
+        bullets.push({ x:mx, y:my, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd,
+          dmg:def.dmg, r:def.kind==='cannon'?7:def.kind==='arrow'?5:4, kind:def.kind,
+          life:140, owner:pi, splash:def.kind==='cannon'?42:0, pierce:def.kind==='arrow'?1:0, color:def.color });
+        beep(def.kind==='gun'?900:def.kind==='cannon'?200:600,0.03,'square',0.03);
+      }
+      m.fireT++;
+    }
+  }
+
+  // bullets
+  for (const b of bullets) {
+    b.x += b.vx; b.y += b.vy; b.life--;
+    const foe = players[1-b.owner];
+    if (hitVehicle(foe, b.x, b.y, b.r)) {
+      if (b.splash>0){ damagePlayer(foe, b.dmg*2); addParticles(b.x,b.y,'#ff9d2e',16,4); beep(160,0.14,'sawtooth',0.05); }
+      else { damagePlayer(foe, b.dmg); addParticles(b.x,b.y,b.color,4,3); }
+      foe.hitFlash = 3;
+      if (b.pierce>0) b.pierce--; else b.life = 0;
+    }
+    if (b.x<-30||b.x>CW+30||b.y<-30||b.y>CH+30) b.life=0;
+  }
+  bullets = bullets.filter(b => b.life>0);
+
+  // venom clouds
+  for (const c of clouds) {
+    c.life--;
+    const foe = players[1-c.owner];
+    if (frame%8===0 && dist2(c.x,c.y,foe.x,foe.y) < (c.r+Math.min(foe.w,foe.h)/2)**2) foe.venom = Math.max(foe.venom, 200);
+  }
+  clouds = clouds.filter(c => c.life>0);
+
+  // flies
+  for (const f of flies) { f.a += (Math.random()-0.5)*0.5; f.x += Math.cos(f.a)*1.5; f.y += Math.sin(f.a)*1.5;
+    f.x = clamp(f.x,f.cx-f.rad,f.cx+f.rad); f.y = clamp(f.y,f.cy-f.rad,f.cy+f.rad); f.life--; }
+  flies = flies.filter(f => f.life>0);
+
+  // venom drain + shake settle
+  for (const p of players) {
+    if (p.hitFlash>0) p.hitFlash--;
+    if (p.shake>0) p.shake--;
+    if (p.venom>0){ p.venom--; if (frame%14===0) damagePlayer(p, 4); }
+  }
+
+  // particles
+  for (const p of particles){ p.x+=p.vx; p.y+=p.vy; p.vx*=0.94; p.vy*=0.94; p.life--; }
+  particles = particles.filter(p=>p.life>0);
+
+  // win check — out of hearts (you're DOWN), OR first to POINT_TARGET points
+  for (let i=0;i<2;i++){
+    if (mode==='over') break;
+    if (players[i].hearts<=0){ players[i].hp=0; players[i].hearts=0; winner=1-i; endBattle(); }
+    else if (players[i].points>=POINT_TARGET){ winner=i; endBattle(); }
+  }
+}
+
+function endBattle() {
+  mode = 'over';
+  const loser = players[1-winner];
+  loser.shake = 200;                    // the down machine shakes for a long time
+  fartSound();
+  if (window.gamepadRumble){ gamepadRumble(loser.id, 1, 1, 900); gamepadRumble(winner, 0.5, 0.5, 300); }
+}
+function steer(p, L, R, U, D) {
+  if (keys[L]) p.x -= p.speed;
+  if (keys[R]) p.x += p.speed;
+  if (keys[U]) p.y -= p.speed;
+  if (keys[D]) p.y += p.speed;
+  p.x = clamp(p.x, p.w/2, CW-p.w/2);
+  p.y = clamp(p.y, p.h/2, CH-p.h/2);
+}
+function damagePlayer(p, d) {
+  p.hp -= d;
+  // the OTHER machine dealt this damage — award them points for it
+  const atk = players[1 - p.id];
+  if (atk) atk.points += d;
+  // did that knock out a whole heart?
+  const nowHearts = Math.max(0, Math.ceil(p.hp / p.hpPerHeart));
+  if (nowHearts < p.hearts) {
+    p.hearts = nowHearts;
+    p.shake = 16;                       // the machine that lost a heart trembles
+    beep(180, 0.12, 'square', 0.06);
+    if (window.gamepadRumble) gamepadRumble(p.id, 0.7, 0.5, 140);
+  }
+}
+
+function fartSound() {
+  // silly descending buzzy "pbbbbt"
+  try {
+    if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(190, AC.currentTime);
+    o.frequency.linearRampToValueAtTime(48, AC.currentTime + 0.55);
+    // wobble for the "brrrt"
+    const lfo = AC.createOscillator(), lg = AC.createGain();
+    lfo.frequency.value = 22; lg.gain.value = 30;
+    lfo.connect(lg); lg.connect(o.frequency); lfo.start();
+    g.gain.value = 0.12;
+    o.connect(g); g.connect(AC.destination); o.start();
+    g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + 0.6);
+    o.stop(AC.currentTime + 0.6); lfo.stop(AC.currentTime + 0.6);
+  } catch (e) {}
+}
+
+function swordExplode(x, y, owner) {
+  const foe = players[1-owner];
+  if (dist2(x,y,foe.x,foe.y) < 130*130) { damagePlayer(foe, WD.sword.dmg); foe.hitFlash=4; foe.venom=260; }
+  addParticles(x,y,'#00e5ff',40,6); addParticles(x,y,'#fff',24,8);
+  clouds.push({ x, y, r:90, life:520, owner });
+  for (let i=0;i<10;i++) flies.push({ x, y, cx:x, cy:y, rad:70, a:Math.random()*6.28, life:520 });
+  beep(60,0.5,'sawtooth',0.08);
+  if (window.gamepadRumble){ gamepadRumble(0,1,1,400); gamepadRumble(1,1,1,400); }
+}
+
+// ---------- draw ----------
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+function drawMachine(p, cx, cy) {
+  // mounts under body outline first? draw body then mounts on top
+  ctx.save(); ctx.translate(cx, cy);
+  if (p.hitFlash>0){ ctx.globalAlpha = 0.6; }
+  ctx.fillStyle = p.color; ctx.strokeStyle='#fff'; ctx.lineWidth=2;
+  roundRect(-p.w/2,-p.h/2,p.w,p.h,10); ctx.fill(); ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.font = Math.min(p.w,p.h)*0.66+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(p.icon, 0, 2);
+  ctx.restore();
+  // mounts
+  for (const m of p.mounts) {
+    if (m.used) continue;
+    ctx.save(); ctx.translate(cx+m.wx, cy+m.wy);
+    if (WD[m.key].kind==='knife') ctx.rotate(m.spin||0);
+    ctx.font='18px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(WD[m.key].icon, 0, 0);
+    ctx.restore();
+  }
+  if (p.venom>0){ ctx.fillStyle='#7dff3c'; ctx.font='16px serif'; ctx.textAlign='center';
+    ctx.fillText('☠️', cx, cy - p.h/2 - 22); }
+}
+function drawHearts(p, cx, cy) {
+  const n = p.maxHearts, size = 11, step = 12, total = n*step;
+  const startX = cx - total/2 + step/2, y = cy - p.h/2 - 16;
+  ctx.font = size+'px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  for (let i=0;i<n;i++){
+    ctx.globalAlpha = i < p.hearts ? 1 : 0.3;
+    ctx.fillText(i < p.hearts ? '❤️' : '🖤', startX + i*step, y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  ctx.clearRect(0,0,CW,CH);
+  if (mode==='menu'){ drawMenu(); return; }
+
+  // grid
+  ctx.strokeStyle='#16233d'; ctx.lineWidth=1;
+  for (let x=0;x<CW;x+=45){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,CH); ctx.stroke(); }
+  for (let y=0;y<CH;y+=45){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(CW,y); ctx.stroke(); }
+
+  if (mode==='vehpick'){ drawVehPick(); return; }
+  if (mode==='build'){ drawBuild(); return; }
+
+  // ---- battle ----
+  for (const c of clouds){ const a=clamp(c.life/520,0,1);
+    const g=ctx.createRadialGradient(c.x,c.y,4,c.x,c.y,c.r);
+    g.addColorStop(0,'rgba(120,255,60,'+(0.35*a)+')'); g.addColorStop(1,'rgba(60,120,20,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(c.x,c.y,c.r,0,6.29); ctx.fill(); }
+  ctx.font='11px serif'; ctx.textAlign='center';
+  for (const f of flies) ctx.fillText('🪰', f.x, f.y);
+
+  for (const b of bullets){
+    if (b.kind==='arrow'){ ctx.strokeStyle=b.color; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.moveTo(b.x,b.y); ctx.lineTo(b.x-b.vx*1.5,b.y-b.vy*1.5); ctx.stroke(); }
+    else { ctx.fillStyle=b.color; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,6.29); ctx.fill(); }
+  }
+  // laser beams
+  for (let pi=0;pi<2;pi++){ const me=players[pi], foe=players[1-pi];
+    for (const m of me.mounts){ if (m.used) continue;
+      if (WD[m.key].kind==='laser' && m.beamOn){ const mx=me.x+m.wx,my=me.y+m.wy;
+        ctx.strokeStyle='rgba(255,46,99,0.85)'; ctx.lineWidth=3;
+        ctx.beginPath(); ctx.moveTo(mx,my); ctx.lineTo(foe.x,foe.y); ctx.stroke(); } } }
+
+  for (const p of particles){ ctx.globalAlpha=clamp(p.life/30,0,1); ctx.fillStyle=p.color; ctx.fillRect(p.x-2,p.y-2,4,4); }
+  ctx.globalAlpha=1;
+
+  for (const p of players) {
+    let ox = p.x, oy = p.y;
+    if (p.shake > 0) { const amp = Math.min(p.shake, 20) * 0.45;
+      ox += (Math.random()-0.5)*amp*2; oy += (Math.random()-0.5)*amp*2; }
+    drawMachine(p, ox, oy);
+    drawHearts(p, ox, oy);
+  }
+
+  // corner name tags: hearts left + points
+  ctx.textAlign='left'; ctx.font='bold 16px system-ui';
+  ctx.fillStyle='#ff6b6b';
+  ctx.fillText('P1  ❤️×'+players[0].hearts+'   ⭐ '+Math.floor(players[0].points), 12, CH-14);
+  ctx.textAlign='right';
+  ctx.fillStyle='#5aa9ff';
+  ctx.fillText('⭐ '+Math.floor(players[1].points)+'   ❤️×'+players[1].hearts+'  P2', CW-12, 24);
+
+  if (mode==='over'){
+    ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(0,0,CW,CH);
+    ctx.textAlign='center';
+    const loser = 1 - winner;
+    ctx.fillStyle = winner===0?'#ff6b6b':'#5aa9ff'; ctx.font='bold 42px system-ui';
+    ctx.fillText('🏆 PLAYER '+(winner+1)+' WINS! 🏆', CW/2, CH/2-44);
+    ctx.fillStyle = winner===0?'#ff6b6b':'#5aa9ff'; ctx.font='bold 24px system-ui';
+    ctx.fillText('Player '+(winner+1)+' — to win, go team! 🎉', CW/2, CH/2-4);
+    ctx.fillStyle = loser===0?'#ff6b6b':'#5aa9ff'; ctx.font='bold 24px system-ui';
+    ctx.fillText('Player '+(loser+1)+' is DOWN — go make a fart sound! 💨', CW/2, CH/2+32);
+    ctx.fillStyle='#ffd166'; ctx.font='16px system-ui';
+    ctx.fillText('⭐ '+Math.floor(players[winner].points)+' points', CW/2, CH/2+64);
+    ctx.fillStyle='#fff'; ctx.font='18px system-ui';
+    ctx.fillText('Press Enter / A / F to play again', CW/2, CH/2+94);
+  }
+}
+
+function drawVehPick() {
+  const p = players[buildIdx];
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle=p.color; ctx.font='bold 24px system-ui';
+  ctx.fillText(p.name.toUpperCase()+' — pick your vehicle!', CW/2, 64);
+  ctx.fillStyle='#9bb'; ctx.font='14px system-ui';
+  ctx.fillText('Scroll the wheel, or ◀ ▶ / triggers to choose   →   Space / A / Start to lock it in', CW/2, 92);
+  const n = VEHICLES.length, gap = CW/n;
+  for (let i=0;i<n;i++){
+    const v = VEHICLES[i], cx = gap*i+gap/2, cy = 300, sel = (i===vehSel[buildIdx]);
+    if (sel){ ctx.fillStyle=p.color+'22'; roundRect(cx-84,cy-104,168,208,14); ctx.fill();
+      ctx.strokeStyle=p.color; ctx.lineWidth=3; roundRect(cx-84,cy-104,168,208,14); ctx.stroke(); }
+    ctx.font='72px serif'; ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(v.icon, cx, cy-28);
+    ctx.font='bold 22px system-ui'; ctx.fillStyle = sel?p.color:'#fff'; ctx.textBaseline='alphabetic';
+    ctx.fillText(v.name, cx, cy+40);
+    ctx.font='12px system-ui'; ctx.fillStyle='#9bb';
+    ctx.fillText('speed '+v.speed.toFixed(1), cx, cy+62);
+    ctx.fillStyle='#333'; ctx.fillRect(cx-50, cy+72, 100, 7);
+    ctx.fillStyle='#f1c40f'; ctx.fillRect(cx-50, cy+72, 100*(v.speed/4.2), 7);
+  }
+}
+
+function drawBuild() {
+  const bp = buildVehiclePos();
+  const p = players[buildIdx];
+  drawMachine(p, bp.x, bp.y);
+
+  const maxR = Math.max(p.w,p.h)*0.85;
+  ctx.strokeStyle = p.color+'66'; ctx.lineWidth=1; ctx.setLineDash([6,6]);
+  ctx.strokeRect(bp.x-maxR,bp.y-maxR,maxR*2,maxR*2); ctx.setLineDash([]);
+
+  // crosshair
+  const w = WEAPON_DEFS[selIdx[buildIdx]];
+  ctx.globalAlpha = p.inv[w.key]>0 ? 0.9 : 0.3;
+  ctx.font='22px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(w.icon, cursor.x, cursor.y); ctx.globalAlpha=1;
+  ctx.strokeStyle=p.color; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(cursor.x,cursor.y,16,0,6.29); ctx.stroke();
+
+  // palette
+  const barY=CH-66, slot=108, startX=(CW-slot*WEAPON_DEFS.length)/2;
+  ctx.fillStyle='rgba(10,17,32,0.85)'; ctx.fillRect(0,barY-8,CW,66);
+  for (let i=0;i<WEAPON_DEFS.length;i++){ const d=WEAPON_DEFS[i], x=startX+i*slot;
+    ctx.fillStyle = i===selIdx[buildIdx] ? '#1e3a5f' : '#131f36';
+    roundRect(x+4,barY,slot-8,50,8); ctx.fill();
+    if (i===selIdx[buildIdx]){ ctx.strokeStyle=p.color; ctx.lineWidth=2; ctx.stroke(); }
+    ctx.font='22px serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#fff';
+    ctx.fillText(d.icon, x+slot/2, barY+18);
+    ctx.font='11px system-ui'; ctx.fillStyle = p.inv[d.key]>0?'#9be':'#e66';
+    ctx.fillText(d.name+' ×'+p.inv[d.key], x+slot/2, barY+40); }
+
+  ctx.textAlign='center';
+  ctx.fillStyle=p.color; ctx.font='bold 18px system-ui';
+  ctx.fillText((p.name.toUpperCase())+' — build your machine!', CW/2, 26);
+  ctx.fillStyle='#9bb'; ctx.font='13px system-ui';
+  const ctrl = buildIdx===0 ? 'Arrows move • A/Space place • B remove • X·Y or triggers pick' : 'WASD move • F place • G remove • triggers pick';
+  ctx.fillText(ctrl + '   →   press Start / Enter when done   ('+p.mounts.length+' mounted)', CW/2, 48);
+
+  if (flashTimer>0){ ctx.fillStyle='#ffd166'; ctx.font='bold 18px system-ui'; ctx.fillText(flashMsg, CW/2, CH-90); }
+}
+
+function drawMenu() {
+  const g=ctx.createLinearGradient(0,0,0,CH); g.addColorStop(0,'#0c0f1a'); g.addColorStop(1,'#132038');
+  ctx.fillStyle=g; ctx.fillRect(0,0,CW,CH); ctx.textAlign='center';
+  ctx.fillStyle='#7ef9ff'; ctx.font='bold 54px system-ui'; ctx.fillText('A  I', CW/2, 130);
+  ctx.font='40px serif'; ctx.fillText('🚗  🐜  ⛵  🚂', CW/2, 195);
+  ctx.fillStyle='#fff'; ctx.font='20px system-ui';
+  ctx.fillText('Two players. Pick a vehicle — car, ant, boat or train —', CW/2, 260);
+  ctx.fillText('bolt on cannons, arrows, spikes, lasers, guns, knives,', CW/2, 290);
+  ctx.fillText('and 2 deadly diamond swords 💎 — then FIGHT each other!', CW/2, 320);
+  ctx.fillStyle='#ffd166'; ctx.font='16px system-ui';
+  ctx.fillText('★ Knock out all 10 hearts to win ★', CW/2, 352);
+  ctx.fillStyle='#ffd166'; ctx.font='bold 24px system-ui';
+  ctx.fillText(Math.floor(frame/30)%2===0 ? '▶ Press Enter / A / Click to start ◀' : '', CW/2, 400);
+}
+
+function updateHud() {
+  if (mode==='menu') hudEl.textContent='A 2-player machine-battle game 🤖⚔️';
+  else if (mode==='vehpick') hudEl.textContent='🚗 '+players[buildIdx].name+' — choose a vehicle';
+  else if (mode==='build') hudEl.textContent='🔧 '+players[buildIdx].name+' building — '+players[buildIdx].mounts.length+' weapons on';
+  else if (mode==='battle') hudEl.textContent='⚔️  P1 ⭐'+Math.floor(players[0].points)+'   vs   P2 ⭐'+Math.floor(players[1].points)+'   (race to '+POINT_TARGET+')';
+  else if (mode==='over') hudEl.textContent='🏆 Player '+(winner+1)+' wins with '+Math.floor(players[winner].points)+' points!';
+}
+
+function loop(){ update(); draw(); updateHud(); requestAnimationFrame(loop); }
+startBtn.addEventListener('click', ()=>{ if(!AC) beep(700,0.05); startNewGame(); startBtn.blur(); canvas.focus(); });
+mode='menu'; loop();
+</script>
+</body>
+</html>

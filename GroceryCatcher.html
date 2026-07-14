@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Grocery Run — Auto-Scroll Shopper</title>
+<style>
+  body { margin: 0; background: #111; color: #fff; font-family: system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; user-select: none; overflow: hidden; }
+  h1 { margin: 8px 0 4px; }
+  #wrap { position: relative; }
+  canvas { background: #2b2b3a; border: 4px solid #333; border-radius: 8px; display: block; }
+  #hud { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; pointer-events: none; }
+  #list { background: rgba(255,255,255,0.95); color: #222; padding: 10px 14px; border-radius: 8px; font-size: 15px; min-width: 180px; box-shadow: 0 4px 8px rgba(0,0,0,0.4); }
+  #list h3 { margin: 0 0 6px; font-size: 16px; border-bottom: 1px dashed #888; padding-bottom: 4px; }
+  #list ul { margin: 0; padding-left: 18px; line-height: 1.4; }
+  #list li.done { text-decoration: line-through; color: #999; }
+  #stats { background: rgba(0,0,0,0.7); padding: 10px 16px; border-radius: 8px; font-size: 15px; text-align: right; }
+  #toast { position: absolute; top: 60%; left: 50%; transform: translate(-50%, -50%); font-size: 26px; background: rgba(0,0,0,0.75); padding: 14px 22px; border-radius: 10px; opacity: 0; transition: opacity 0.25s; pointer-events: none; font-weight: bold; }
+  #msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 30px; background: rgba(0,0,0,0.9); padding: 24px 36px; border-radius: 12px; display: none; text-align: center; }
+  button { margin-top: 12px; font-size: 18px; padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer; background: #f4c430; font-weight: bold; }
+  small { opacity: 0.7; margin: 6px 0; }
+</style>
+</head>
+<body>
+<h1>🛒 Grocery Run</h1>
+<small>The aisle scrolls past you automatically &nbsp;•&nbsp; Press SPACE when an item from your list is in the GRAB ZONE</small>
+<div id="wrap">
+  <canvas id="game" width="900" height="520"></canvas>
+  <div id="hud">
+    <div id="list">
+      <h3>📋 Shopping List</h3>
+      <ul id="listItems"></ul>
+    </div>
+    <div id="stats">
+      🏷 Level: <span id="level">1</span><br>
+      ⏱ <span id="time">0.0</span>s<br>
+      ❌ Misses: <span id="wrong">0</span><br>
+      ✅ Got: <span id="got">0</span>/<span id="total">0</span>
+    </div>
+  </div>
+  <div id="toast"></div>
+  <div id="msg"></div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const ALL_ITEMS = [
+  { name: 'Tomato',      emoji: '🍅' },
+  { name: 'Carrot',      emoji: '🥕' },
+  { name: 'Cantaloupe',  emoji: '🍈' },
+  { name: 'Watermelon',  emoji: '🍉' },
+  { name: 'Orange',      emoji: '🍊' },
+  { name: 'Strawberry',  emoji: '🍓' },
+  { name: 'Dragonfruit', emoji: '🐉' },
+  { name: 'Cucumber',    emoji: '🥒' },
+  { name: 'Marshmallow', emoji: '☁️' },
+  { name: 'Chocolate',   emoji: '🍫' },
+  { name: "S'more Bar",  emoji: '🍪' },
+  { name: 'Cinnamon',    emoji: '🌰' },
+];
+
+const SCROLL_SPEED = 140;       // pixels per second
+const ITEM_SPACING = 150;       // horizontal distance between items
+const SHELF_ROWS = [220, 320, 420];
+const GRAB_ZONE_X = W / 2;
+const GRAB_ZONE_HALF = 55;
+const ITEM_SIZE = 64;
+
+let shelfItems = [];
+let list = [];
+let scrollX = 0;
+let nextSpawnX = 0;
+let spawnTimerLeft = 0, spawnTimerRight = 0;
+let startTime, elapsed = 0, wrongGrabs = 0, got = 0, finished = false;
+let level = 1;
+let gameOverFlash = 0;
+
+let audioCtx;
+function ensureAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+  }
+  return audioCtx;
+}
+
+function playGoodSound() {
+  const ac = ensureAudio(); if (!ac) return;
+  const o = ac.createOscillator(); const g = ac.createGain();
+  o.type = 'sine'; o.frequency.setValueAtTime(660, ac.currentTime);
+  o.frequency.exponentialRampToValueAtTime(990, ac.currentTime + 0.12);
+  g.gain.setValueAtTime(0.2, ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.18);
+  o.connect(g).connect(ac.destination);
+  o.start(); o.stop(ac.currentTime + 0.2);
+}
+
+function playBuzzer() {
+  const ac = ensureAudio(); if (!ac) return;
+  const o = ac.createOscillator(); const g = ac.createGain();
+  o.type = 'sawtooth'; o.frequency.setValueAtTime(180, ac.currentTime);
+  o.frequency.linearRampToValueAtTime(70, ac.currentTime + 0.4);
+  g.gain.setValueAtTime(0.25, ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.5);
+  o.connect(g).connect(ac.destination);
+  o.start(); o.stop(ac.currentTime + 0.5);
+}
+
+function playWompWompWomp() {
+  const ac = ensureAudio(); if (!ac) return;
+  // Three descending "womp" notes — sad trombone style
+  const notes = [
+    { freq: 350, start: 0.00, dur: 0.32 },
+    { freq: 280, start: 0.30, dur: 0.32 },
+    { freq: 200, start: 0.60, dur: 0.55 },
+  ];
+  for (const n of notes) {
+    const t0 = ac.currentTime + n.start;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = 'sawtooth';
+    // Pitch slide down a bit per note for trombone effect
+    o.frequency.setValueAtTime(n.freq, t0);
+    o.frequency.exponentialRampToValueAtTime(n.freq * 0.7, t0 + n.dur);
+    g.gain.setValueAtTime(0.0, t0);
+    g.gain.linearRampToValueAtTime(0.28, t0 + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + n.dur);
+    // Lowpass to soften the sawtooth into a trombone-like tone
+    const lp = ac.createBiquadFilter();
+    lp.type = 'lowpass'; lp.frequency.value = 1100;
+    o.connect(lp).connect(g).connect(ac.destination);
+    o.start(t0);
+    o.stop(t0 + n.dur + 0.02);
+  }
+}
+
+function playYuck() {
+  const ac = ensureAudio(); if (!ac) return;
+  // Disgusted "blegh" — descending noise + low tone
+  const o = ac.createOscillator(); const g = ac.createGain();
+  o.type = 'square'; o.frequency.setValueAtTime(420, ac.currentTime);
+  o.frequency.exponentialRampToValueAtTime(80, ac.currentTime + 0.6);
+  g.gain.setValueAtTime(0.3, ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.7);
+  o.connect(g).connect(ac.destination);
+  o.start(); o.stop(ac.currentTime + 0.7);
+
+  // Noise burst
+  const bufSize = ac.sampleRate * 0.3;
+  const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufSize);
+  const noise = ac.createBufferSource(); noise.buffer = buf;
+  const ng = ac.createGain(); ng.gain.value = 0.25;
+  noise.connect(ng).connect(ac.destination);
+  noise.start();
+}
+
+function init(keepLevel) {
+  shelfItems = [];
+  scrollX = 0;
+  nextSpawnX = W;
+  spawnTimerLeft = 0;
+  spawnTimerRight = 0;
+  wrongGrabs = 0;
+  got = 0;
+  finished = false;
+  elapsed = 0;
+  gameOverFlash = 0;
+  if (!keepLevel) level = 1;
+  document.getElementById('level').textContent = level;
+
+  list = ALL_ITEMS.map(i => ({ ...i, needed: 1, got: 0 }));
+  document.getElementById('total').textContent = list.length;
+
+  if (level >= 3) {
+    // Bidirectional: pre-fill the screen with items moving both ways
+    const itemSpeed = 90 + (level - 3) * 20;
+    const interval = ITEM_SPACING / itemSpeed;
+    for (let i = 0; i < 8; i++) {
+      const dir = (i % 2 === 0) ? -1 : 1;
+      const screenX = (dir === -1) ? (W - i * 100) : (i * 100);
+      spawnMovingItem(screenX, dir, itemSpeed);
+    }
+  } else {
+    for (let x = 200; x < W + 400; x += ITEM_SPACING) {
+      spawnItemAt(x);
+      nextSpawnX = x + ITEM_SPACING;
+    }
+  }
+
+  renderList();
+  startTime = performance.now();
+  document.getElementById('msg').style.display = 'none';
+}
+
+function rollHazard() {
+  if (level < 2) return null;
+  const r = Math.random();
+  const hazardChance = Math.min(0.45, 0.18 + (level - 2) * 0.07);
+  if (r < hazardChance / 2) return 'mold';
+  if (r < hazardChance) return 'spike';
+  return null;
+}
+
+function spawnItemAt(worldX) {
+  const item = ALL_ITEMS[Math.floor(Math.random() * ALL_ITEMS.length)];
+  const row = Math.floor(Math.random() * SHELF_ROWS.length);
+  shelfItems.push({
+    ...item,
+    worldX: worldX,
+    screenX: null,        // null = uses worldX-scrollX (level 1-2)
+    vx: 0,
+    y: SHELF_ROWS[row],
+    taken: false,
+    flashTime: 0,
+    hazard: rollHazard(),
+  });
+}
+
+function spawnMovingItem(screenX, dir, speed) {
+  const item = ALL_ITEMS[Math.floor(Math.random() * ALL_ITEMS.length)];
+  const row = Math.floor(Math.random() * SHELF_ROWS.length);
+  shelfItems.push({
+    ...item,
+    worldX: 0,
+    screenX,
+    vx: dir * speed,
+    y: SHELF_ROWS[row],
+    taken: false,
+    flashTime: 0,
+    hazard: rollHazard(),
+  });
+}
+
+function renderList() {
+  const ul = document.getElementById('listItems');
+  ul.innerHTML = list.map(it =>
+    `<li class="${it.got >= it.needed ? 'done' : ''}">${it.emoji} ${it.name}</li>`
+  ).join('');
+  document.getElementById('got').textContent = got;
+}
+
+const keys = {};
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (finished) {
+      // If list complete -> next level. If hazard death -> restart at level 1.
+      if (list.every(l => l.got >= l.needed)) {
+        level++;
+        init(true);
+      } else {
+        level = 1;
+        init(false);
+      }
+    } else {
+      tryGrab();
+    }
+  }
+});
+
+function itemScreenX(it) {
+  return (it.screenX !== null) ? it.screenX : (it.worldX - scrollX);
+}
+
+function tryGrab() {
+  ensureAudio();
+  let target = null, bestDist = GRAB_ZONE_HALF + 20;
+  for (const it of shelfItems) {
+    if (it.taken) continue;
+    const sx = itemScreenX(it);
+    const d = Math.abs(sx - GRAB_ZONE_X);
+    if (d < bestDist) { bestDist = d; target = it; }
+  }
+  if (!target) {
+    wrongGrabs++;
+    document.getElementById('wrong').textContent = wrongGrabs;
+    showToast(`💨 Empty grab!`, '#e67e22');
+    return;
+  }
+
+  // Hazard = instant loss, must restart
+  if (target.hazard) {
+    target.taken = true;
+    gameOverFlash = 1.0;
+    if (target.hazard === 'mold') {
+      playYuck();
+      showToast(`🤢 EWW! That had MOLD! Restart...`, '#7fff7f');
+    } else {
+      playBuzzer();
+      showToast(`🩸 OUCH! SPIKES! Restart...`, '#ff5555');
+    }
+    // Sad trombone after the hazard sound
+    setTimeout(playWompWompWomp, 400);
+    gameOver();
+    return;
+  }
+
+  const listEntry = list.find(l => l.name === target.name && l.got < l.needed);
+  if (listEntry) {
+    listEntry.got++;
+    target.taken = true;
+    got++;
+    playGoodSound();
+    showToast(`✅ Got ${target.emoji} ${target.name}!`, '#2ecc71');
+    renderList();
+    if (list.every(l => l.got >= l.needed)) finishLevel();
+  } else {
+    wrongGrabs++;
+    target.flashTime = 0.4;
+    document.getElementById('wrong').textContent = wrongGrabs;
+    showToast(`❌ ${target.emoji} not on the list!`, '#e74c3c');
+  }
+}
+
+function gameOver() {
+  finished = true;
+  const m = document.getElementById('msg');
+  m.style.display = 'block';
+  m.innerHTML = `💀 You grabbed something nasty!<br><span style="font-size:18px">Reached Level ${level}</span><br><br><button onclick="restart()">Restart from Level 1</button><br><small style="font-size:14px;opacity:0.7">or press SPACE</small>`;
+}
+window.restart = function() { level = 1; init(false); };
+
+let toastTimer;
+function showToast(text, color) {
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.style.color = color;
+  t.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.style.opacity = 0, 900);
+}
+
+function finishLevel() {
+  finished = true;
+  const m = document.getElementById('msg');
+  m.style.display = 'block';
+  const nextLevel = level + 1;
+  let warning = '';
+  if (nextLevel === 2) warning = `<br><span style="font-size:16px;color:#ffae42">⚠ Watch out for MOLD 🟢 and SPIKES on items!</span>`;
+  else if (nextLevel === 3) warning = `<br><span style="font-size:16px;color:#ff6b6b">⚠ Plates now come from BOTH directions!</span>`;
+  else if (nextLevel >= 4) warning = `<br><span style="font-size:16px;color:#ff6b6b">⚠ Faster &amp; more hazards ahead!</span>`;
+  m.innerHTML = `🎉 Level ${level} Complete!<br>Time: ${elapsed.toFixed(1)}s &nbsp;Misses: ${wrongGrabs}${warning}<br><br><button onclick="nextLevel()">Start Level ${nextLevel}</button><br><small style="font-size:14px;opacity:0.7">or press SPACE</small>`;
+}
+window.nextLevel = function() { level++; init(true); };
+window.init = init;
+
+function update(dt) {
+  if (gameOverFlash > 0) gameOverFlash -= dt;
+  if (finished) return;
+  elapsed = (performance.now() - startTime) / 1000;
+  document.getElementById('time').textContent = elapsed.toFixed(1);
+
+  // Level 3 is slower because items move both ways and need more reaction time
+  const itemSpeed = (level >= 3)
+    ? 90 + (level - 3) * 20
+    : SCROLL_SPEED + (level - 1) * 35;
+
+  if (level >= 3) {
+    // Bidirectional spawning from both sides on independent timers
+    const spawnInterval = ITEM_SPACING / itemSpeed; // seconds between spawns per side
+    spawnTimerLeft -= dt;
+    spawnTimerRight -= dt;
+    if (spawnTimerLeft <= 0) {
+      spawnMovingItem(-40, 1, itemSpeed);
+      spawnTimerLeft = spawnInterval * (0.85 + Math.random() * 0.4);
+    }
+    if (spawnTimerRight <= 0) {
+      spawnMovingItem(W + 40, -1, itemSpeed);
+      spawnTimerRight = spawnInterval * (0.85 + Math.random() * 0.4);
+    }
+  } else {
+    scrollX += itemSpeed * dt;
+    while (nextSpawnX - scrollX < W + 200) {
+      spawnItemAt(nextSpawnX);
+      nextSpawnX += ITEM_SPACING;
+    }
+  }
+
+  // Move items with individual velocities
+  for (const it of shelfItems) {
+    if (it.screenX !== null) it.screenX += it.vx * dt;
+    if (it.flashTime > 0) it.flashTime -= dt;
+  }
+
+  // Cull off-screen items
+  shelfItems = shelfItems.filter(it => {
+    const sx = itemScreenX(it);
+    // Level 1-2: only cull on the left (items pre-spawned far to the right are still incoming)
+    if (it.screenX === null) return sx > -120;
+    // Level 3+: cull on both sides
+    return sx > -120 && sx < W + 120;
+  });
+}
+
+function drawScene() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Ceiling
+  const ceil = ctx.createLinearGradient(0, 0, 0, 100);
+  ceil.addColorStop(0, '#e8e4cc');
+  ceil.addColorStop(1, '#cfc9a8');
+  ctx.fillStyle = ceil;
+  ctx.fillRect(0, 0, W, 100);
+
+  // Back wall (light)
+  ctx.fillStyle = '#dfe6ec';
+  ctx.fillRect(0, 100, W, 380);
+
+  // Floor
+  const floor = ctx.createLinearGradient(0, 480, 0, H);
+  floor.addColorStop(0, '#5a5566');
+  floor.addColorStop(1, '#3a3544');
+  ctx.fillStyle = floor;
+  ctx.fillRect(0, 480, W, H - 480);
+
+  // Floor tile lines (parallax)
+  ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+  ctx.lineWidth = 1;
+  const tileOffset = -(scrollX * 0.3) % 80;
+  for (let i = -1; i < 14; i++) {
+    const x = i * 80 + tileOffset;
+    ctx.beginPath();
+    ctx.moveTo(x, 480);
+    ctx.lineTo(x + 30, H);
+    ctx.stroke();
+  }
+
+  // Aisle sign
+  ctx.fillStyle = '#fff8dc';
+  ctx.fillRect(20, 20, 220, 40);
+  ctx.strokeStyle = '#a08020';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(20, 20, 220, 40);
+  ctx.fillStyle = '#3a2a10';
+  ctx.font = 'bold 16px sans-serif';
+  ctx.fillText('AISLE 4 — GROCERIES', 38, 46);
+
+  // Shelves (3 rows)
+  for (const y of SHELF_ROWS) {
+    // Shelf back panel
+    ctx.fillStyle = '#b0a890';
+    ctx.fillRect(0, y - 40, W, 90);
+    // Top edge
+    ctx.fillStyle = '#8a7a5a';
+    ctx.fillRect(0, y - 42, W, 4);
+    // Shelf surface
+    ctx.fillStyle = '#6a5a3a';
+    ctx.fillRect(0, y + 50, W, 10);
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.fillRect(0, y + 60, W, 4);
+  }
+
+  // Grab zone highlight
+  const gradGrab = ctx.createLinearGradient(GRAB_ZONE_X - GRAB_ZONE_HALF, 0, GRAB_ZONE_X + GRAB_ZONE_HALF, 0);
+  gradGrab.addColorStop(0, 'rgba(255,220,0,0)');
+  gradGrab.addColorStop(0.5, 'rgba(255,220,0,0.35)');
+  gradGrab.addColorStop(1, 'rgba(255,220,0,0)');
+  ctx.fillStyle = gradGrab;
+  ctx.fillRect(GRAB_ZONE_X - GRAB_ZONE_HALF, 110, GRAB_ZONE_HALF * 2, 380);
+
+  ctx.strokeStyle = 'rgba(255,220,0,0.85)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([8, 6]);
+  ctx.beginPath();
+  ctx.moveTo(GRAB_ZONE_X - GRAB_ZONE_HALF, 110);
+  ctx.lineTo(GRAB_ZONE_X - GRAB_ZONE_HALF, 490);
+  ctx.moveTo(GRAB_ZONE_X + GRAB_ZONE_HALF, 110);
+  ctx.lineTo(GRAB_ZONE_X + GRAB_ZONE_HALF, 490);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Items on shelves
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const it of shelfItems) {
+    if (it.taken) continue;
+    const sx = itemScreenX(it);
+    if (sx < -60 || sx > W + 60) continue;
+
+    // Price tag under item
+    ctx.fillStyle = '#fffbe6';
+    ctx.fillRect(sx - 28, it.y + 30, 56, 16);
+    ctx.strokeStyle = '#aaa';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(sx - 28, it.y + 30, 56, 16);
+    ctx.fillStyle = '#222';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillText(it.name, sx, it.y + 38);
+
+    // Item shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(sx, it.y + 26, 26, 6, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // Item itself, large
+    let size = ITEM_SIZE;
+    if (it.flashTime > 0) {
+      ctx.fillStyle = `rgba(255,0,0,${it.flashTime})`;
+      ctx.beginPath();
+      ctx.arc(sx, it.y, 40, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.font = `${size}px sans-serif`;
+    ctx.fillStyle = '#000';
+    ctx.fillText(it.emoji, sx, it.y);
+
+    // Hazard overlays
+    if (it.hazard === 'mold') {
+      drawMold(sx, it.y);
+    } else if (it.hazard === 'spike') {
+      drawSpikes(sx, it.y);
+    }
+
+    // Direction arrow (level 3+: items move both ways, indicate direction)
+    if (level >= 3 && it.vx !== 0) {
+      ctx.save();
+      ctx.fillStyle = it.vx > 0 ? 'rgba(50,140,255,0.85)' : 'rgba(255,140,50,0.85)';
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      const ay = it.y + 56;
+      const ax = sx;
+      ctx.beginPath();
+      if (it.vx > 0) {
+        ctx.moveTo(ax - 10, ay - 5);
+        ctx.lineTo(ax + 10, ay);
+        ctx.lineTo(ax - 10, ay + 5);
+      } else {
+        ctx.moveTo(ax + 10, ay - 5);
+        ctx.lineTo(ax - 10, ay);
+        ctx.lineTo(ax + 10, ay + 5);
+      }
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.restore();
+    }
+  }
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+
+  // GRAB ZONE label
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(GRAB_ZONE_X - 60, 120, 120, 26);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('GRAB ZONE', GRAB_ZONE_X, 138);
+  ctx.textAlign = 'left';
+
+  // Shopper (foreground, in front of grab zone)
+  drawShopper(GRAB_ZONE_X, 510);
+
+  // Red game-over flash
+  if (gameOverFlash > 0) {
+    ctx.fillStyle = `rgba(200,0,0,${Math.min(0.55, gameOverFlash * 0.6)})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Press space hint
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('▼ press SPACE to grab ▼', GRAB_ZONE_X, 108);
+  ctx.textAlign = 'left';
+}
+
+function drawMold(x, y) {
+  // Fuzzy green-black splotches
+  const blobs = [
+    [-18, -10, 10], [12, -14, 9], [-8, 14, 11], [16, 8, 8], [0, -2, 7], [-22, 6, 6]
+  ];
+  for (const [dx, dy, r] of blobs) {
+    const grd = ctx.createRadialGradient(x+dx, y+dy, 1, x+dx, y+dy, r);
+    grd.addColorStop(0, 'rgba(40,90,30,0.95)');
+    grd.addColorStop(0.6, 'rgba(80,140,40,0.75)');
+    grd.addColorStop(1, 'rgba(80,140,40,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(x+dx, y+dy, r, 0, Math.PI*2);
+    ctx.fill();
+  }
+  // Hairy fuzz lines
+  ctx.strokeStyle = 'rgba(20,60,20,0.8)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    const r1 = 18 + Math.sin(i*1.7) * 4;
+    const r2 = r1 + 5;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(a)*r1, y + Math.sin(a)*r1);
+    ctx.lineTo(x + Math.cos(a)*r2, y + Math.sin(a)*r2);
+    ctx.stroke();
+  }
+  // Warning label
+  ctx.fillStyle = 'rgba(20,60,20,0.85)';
+  ctx.fillRect(x - 18, y - 44, 36, 14);
+  ctx.fillStyle = '#bfffbf';
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('MOLD', x, y - 33);
+}
+
+function drawSpikes(x, y) {
+  // Plate underneath
+  ctx.fillStyle = '#bbb';
+  ctx.beginPath();
+  ctx.ellipse(x, y + 16, 30, 7, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle = '#777';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // Spikes radiating
+  ctx.fillStyle = '#999';
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  const spikes = 10;
+  for (let i = 0; i < spikes; i++) {
+    const a = (i / spikes) * Math.PI * 2;
+    const baseR = 22;
+    const tipR = 38;
+    const ax = x + Math.cos(a - 0.12) * baseR;
+    const ay = y + Math.sin(a - 0.12) * baseR;
+    const bx = x + Math.cos(a + 0.12) * baseR;
+    const by = y + Math.sin(a + 0.12) * baseR;
+    const tx = x + Math.cos(a) * tipR;
+    const ty = y + Math.sin(a) * tipR;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay); ctx.lineTo(tx, ty); ctx.lineTo(bx, by); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+  }
+  // Warning label
+  ctx.fillStyle = 'rgba(120,0,0,0.9)';
+  ctx.fillRect(x - 22, y - 50, 44, 14);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('SPIKES!', x, y - 39);
+}
+
+function drawShopper(x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Cart body
+  ctx.fillStyle = '#c0392b';
+  ctx.fillRect(-55, -45, 110, 55);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-50, -38, 100, 14);
+  // Wheels
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(-42, 14, 8, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(42, 14, 8, 0, Math.PI*2); ctx.fill();
+
+  // Hands on cart handle
+  ctx.fillStyle = '#ffd29c';
+  ctx.beginPath(); ctx.arc(-50, -50, 6, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(50, -50, 6, 0, Math.PI*2); ctx.fill();
+
+  // Body / shirt (back of shopper)
+  ctx.fillStyle = '#3498db';
+  ctx.fillRect(-32, -90, 64, 50);
+  // Head from behind
+  ctx.fillStyle = '#ffd29c';
+  ctx.beginPath(); ctx.arc(0, -110, 18, 0, Math.PI*2); ctx.fill();
+  // Hair
+  ctx.fillStyle = '#5a3a1a';
+  ctx.beginPath();
+  ctx.arc(0, -114, 18, Math.PI, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  update(dt);
+  drawScene();
+  requestAnimationFrame(loop);
+}
+
+init();
+requestAnimationFrame(loop);
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    a: 'Space', b: 'Space', start: 'Space'
+  }]
+});
+</script>
+</body>
+</html>

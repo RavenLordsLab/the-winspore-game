@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Jeffed</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a0a2a;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Arial Black', Arial, sans-serif;
+    color: #fff;
+  }
+  #title {
+    color: #ffd24a;
+    font-size: 28px;
+    letter-spacing: 8px;
+    text-shadow: 0 0 24px #ffd24a88, 0 0 4px #ff5522;
+    margin-bottom: 8px;
+  }
+  #subtitle {
+    color: #ffaa66;
+    font-size: 12px;
+    letter-spacing: 4px;
+    margin-bottom: 6px;
+  }
+  canvas {
+    border: 2px solid #ffd24a44;
+    box-shadow: 0 0 40px #ffd24a1a;
+    display: block;
+    background: #87ceeb;
+  }
+  #hint {
+    color: #aaa; font-size: 11px; letter-spacing: 2px; margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+<div id="title">&#x1F6F5; JEFFED &#x1F6F5;</div>
+<div id="subtitle">a little blonde boy. a long road. a very bad day.</div>
+<canvas id="c"></canvas>
+<div id="hint">&larr; &uarr; &darr; &rarr; to drive  &middot;  SPACE to pick / restart</div>
+<script>
+// ============================================================
+//  JEFFED — race game with claws, cannons, cloud bombs & TNT
+// ============================================================
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+canvas.width  = 960;
+canvas.height = 540;
+const W = canvas.width, H = canvas.height;
+
+// ── Layout ──────────────────────────────────────────────
+const ROAD_TOP = 240, ROAD_BOT = 500;
+const ROAD_H   = ROAD_BOT - ROAD_TOP;
+const N_LANES  = 4;
+const LANE_H   = ROAD_H / N_LANES;
+const PLAYER_X = 220;
+
+// ── Game constants ──────────────────────────────────────
+const TRACK_LEN  = 24000;
+const ROAD_RATE  = 1.6;
+const POS_SCALE  = 1 / ROAD_RATE;  // game-units → pixels: divide by this
+const MIN_SPEED  = 4;
+const DOOM_BASE  = 1.0;       // baseline doom wall creep speed
+const DOOM_GAP   = 420;       // initial gap between player and doom wall (game units)
+const DOOM_LOSS  = 160;       // doom jumps forward this much when TNT hits
+
+// ── State ───────────────────────────────────────────────
+let gameState  = 'select';    // 'select' | 'countdown' | 'racing' | 'win' | 'gameover'
+let scrollX    = 0;
+let raceTime   = 0;
+let countdown  = 3;
+let cdTimer    = 0;
+let selectIdx  = 2;           // start on CAR
+let flashTimer = 0;
+let endTimer   = 0;
+
+// ── Vehicles (player picks one) ─────────────────────────
+const VEHICLES = [
+  { id:'train', name:'TRAIN',       hearts:100, maxSpd:9,  accel:0.14, w:130, h:54, draw:drawTrain,  blurb:'tank. 100 hearts. slow.' },
+  { id:'truck', name:'TRUCK',       hearts:30,  maxSpd:14, accel:0.28, w:96,  h:46, draw:drawTruck,  blurb:'30 hearts. solid mid.' },
+  { id:'car',   name:'CAR',         hearts:12,  maxSpd:18, accel:0.42, w:80,  h:38, draw:drawCar,    blurb:'12 hearts. fast & flicky.' },
+  { id:'semi',  name:'SEMI',        hearts:90,  maxSpd:10, accel:0.18, w:148, h:50, draw:drawSemi,   blurb:'90 hearts. long & slow.' },
+  { id:'potty', name:'PORTA-POTTY', hearts:2,   maxSpd:20, accel:0.50, w:58,  h:70, draw:drawPotty,  blurb:'2 hearts. but VERY fast.' },
+  { id:'couch', name:'COUCH',       hearts:10,  maxSpd:16, accel:0.36, w:104, h:50, draw:drawCouch,  blurb:'10 hearts. zippy.' },
+];
+
+// ── Player ──────────────────────────────────────────────
+const P = {
+  vehIdx: 2,
+  lane: 1.5,        // float lane (so you can nudge)
+  speed: 0,
+  brake: 0.55,
+  friction: 0.06,
+  dist: 0,
+  finished: false,
+  hearts: 10,
+  maxHearts: 10,
+  invuln: 0,        // i-frames after a hit
+  shake: 0,
+  score: 0,
+  money: 0,
+};
+
+function curVeh() { return VEHICLES[P.vehIdx]; }
+
+// ── Doom wall (track deterioration behind you) ──────────
+let doomDist = 0;     // game units; if doomDist >= P.dist => game over
+
+// ── Hazards & pickups ───────────────────────────────────
+let clouds       = [];   // floating clouds that drop bombs
+let cloudBombs   = [];   // falling projectiles
+let cannonballs  = [];   // side cannonballs across lanes
+let cannonPuffs  = [];
+let cannonTimer  = 1.4;
+let claws        = [];   // ground claws (hidden until triggered)
+let tnts         = [];   // TNT crates on the track
+let explosions   = [];   // visual explosions
+let rocks        = [];   // pickup rocks
+let crumbles     = [];   // visual chunks falling off track
+let bikePickups  = [];   // bonus bike collectibles
+
+// ── Input ───────────────────────────────────────────────
+const K = {};
+window.addEventListener('keydown', e => {
+  K[e.code] = true;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  if (e.code === 'Space') handleSpace();
+});
+window.addEventListener('keyup', e => { K[e.code] = false; });
+
+function handleSpace() {
+  if (gameState === 'select') {
+    P.vehIdx = selectIdx;
+    startRace();
+  } else if (gameState === 'win' || gameState === 'gameover') {
+    gameState = 'select';
+  }
+}
+
+// ── Helpers ─────────────────────────────────────────────
+const laneY = l => ROAD_TOP + LANE_H * l + LANE_H / 2;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// ── Setup ───────────────────────────────────────────────
+function startRace() {
+  const v = curVeh();
+  P.lane = 1.5; P.speed = 0; P.dist = 0; P.finished = false;
+  P.hearts = v.hearts; P.maxHearts = v.hearts;
+  P.invuln = 0; P.shake = 0; P.score = 0; P.money = 0;
+  doomDist = -DOOM_GAP;
+  clouds = []; cloudBombs = []; cannonballs = []; cannonPuffs = [];
+  claws = []; tnts = []; explosions = []; rocks = []; crumbles = []; bikePickups = [];
+  scrollX = 0; raceTime = 0;
+  cannonTimer = 1.4;
+  countdown = 3; cdTimer = 0;
+  flashTimer = 0; endTimer = 0;
+  buildHazards();
+  buildClouds();
+  gameState = 'countdown';
+}
+
+function buildClouds() {
+  for (let i = 0; i < 5; i++) {
+    clouds.push({
+      x: Math.random() * W,
+      y: 40 + Math.random() * 130,
+      sz: 36 + Math.random() * 32,
+      vx: 8 + Math.random() * 12,
+      dropTimer: 3 + Math.random() * 5,
+    });
+  }
+}
+
+function buildHazards() {
+  // Distribute hazards along the track — sparser, more breathing room
+  for (let d = 800; d < TRACK_LEN - 400; d += 180 + Math.random() * 220) {
+    const r = Math.random();
+    if (r < 0.20) {
+      // Hidden ground claw (single)
+      claws.push({ dist: d, lane: Math.floor(Math.random() * N_LANES), triggered: false, anim: 0 });
+    } else if (r < 0.55) {
+      // Rocks (collectibles, 1–3 in a cluster)
+      const baseLane = Math.floor(Math.random() * N_LANES);
+      const cnt = 1 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < cnt; i++) {
+        rocks.push({ dist: d + i * 28, lane: clamp(baseLane + (Math.random()<0.5?-1:1)*Math.floor(i/2), 0, N_LANES-1), got: false });
+      }
+    } else if (r < 0.70) {
+      // TNT crate
+      tnts.push({ dist: d, lane: Math.floor(Math.random() * N_LANES), live: true, blink: 0 });
+    } else if (r < 0.85) {
+      // Bike pickup (bonus)
+      bikePickups.push({ dist: d, lane: Math.floor(Math.random() * N_LANES), got: false });
+    }
+    // remainder: clear stretch
+  }
+}
+
+// ============================================================
+//  UPDATE
+// ============================================================
+let lastT = performance.now();
+function loop(now) {
+  const dt = Math.min(0.033, (now - lastT) / 1000);
+  lastT = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+function update(dt) {
+  if (gameState === 'select') {
+    if (K['ArrowLeft'])  { K['ArrowLeft']  = false; selectIdx = (selectIdx + VEHICLES.length - 1) % VEHICLES.length; }
+    if (K['ArrowRight']) { K['ArrowRight'] = false; selectIdx = (selectIdx + 1) % VEHICLES.length; }
+    return;
+  }
+
+  if (gameState === 'countdown') {
+    cdTimer += dt;
+    if (cdTimer >= 1) { cdTimer = 0; countdown--; }
+    if (countdown <= 0) gameState = 'racing';
+    return;
+  }
+
+  if (gameState === 'win' || gameState === 'gameover') {
+    endTimer += dt;
+    return;
+  }
+
+  // ── racing ──
+  raceTime += dt;
+  flashTimer = Math.max(0, flashTimer - dt);
+  P.invuln = Math.max(0, P.invuln - dt);
+  P.shake  = Math.max(0, P.shake - dt);
+
+  // Player input
+  const v = curVeh();
+  if (K['ArrowUp'])    P.speed = Math.min(v.maxSpd, P.speed + v.accel);
+  else if (K['ArrowDown']) P.speed = Math.max(0, P.speed - P.brake);
+  else                 P.speed = Math.max(0, P.speed - P.friction);
+
+  const laneSpd = 5.5 * dt;
+  if (K['ArrowLeft'])  P.lane = Math.max(0, P.lane - laneSpd);
+  if (K['ArrowRight']) P.lane = Math.min(N_LANES - 1, P.lane + laneSpd);
+
+  P.dist += P.speed;
+  scrollX += P.speed * ROAD_RATE;
+
+  // Doom wall: creeps forward at base rate, plus extra if you're slow
+  const slowPenalty = Math.max(0, MIN_SPEED - P.speed) * 0.8;
+  doomDist += DOOM_BASE + slowPenalty;
+  if (doomDist >= P.dist) {
+    P.hearts = 0;
+  }
+
+  // Win
+  if (P.dist >= TRACK_LEN && !P.finished) {
+    P.finished = true;
+    gameState  = 'win';
+    endTimer = 0;
+    return;
+  }
+
+  // Update clouds & cloud bombs
+  for (const c of clouds) {
+    c.x -= c.vx * dt;
+    if (c.x < -80) { c.x = W + 60; c.y = 40 + Math.random() * 130; c.dropTimer = 3 + Math.random() * 4; }
+    c.dropTimer -= dt;
+    if (c.dropTimer <= 0 && gameState === 'racing') {
+      c.dropTimer = 3.5 + Math.random() * 4;
+      cloudBombs.push({
+        x: c.x, y: c.y + 18,
+        vx: -15 + Math.random() * 30,
+        vy: 30 + Math.random() * 30,
+        spin: Math.random() * 6.28,
+        kind: Math.random() < 0.5 ? 'bomb' : 'anvil'
+      });
+    }
+  }
+  for (const b of cloudBombs) {
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.vy += 130 * dt;
+    b.spin += 4 * dt;
+  }
+  // Filter offscreen bombs
+  cloudBombs = cloudBombs.filter(b => b.y < H + 40 && b.x > -40 && b.x < W + 40);
+
+  // Cannonballs (from sides)
+  cannonTimer -= dt;
+  if (cannonTimer <= 0 && gameState === 'racing') {
+    cannonTimer = 2.5 + Math.random() * 2.5;
+    spawnCannonball();
+  }
+  for (const cb of cannonballs) cb.x += cb.vx * dt;
+  cannonballs = cannonballs.filter(cb => cb.x > -60 && cb.x < W + 60);
+  for (const p of cannonPuffs) p.timer -= dt;
+  cannonPuffs = cannonPuffs.filter(p => p.timer > 0);
+
+  // Explosions
+  for (const e of explosions) e.t += dt;
+  explosions = explosions.filter(e => e.t < 0.6);
+
+  // Crumbles (debris from track)
+  for (const c of crumbles) {
+    c.x += c.vx * dt;
+    c.y += c.vy * dt;
+    c.vy += 280 * dt;
+    c.t  += dt;
+  }
+  crumbles = crumbles.filter(c => c.t < 1.5);
+
+  // Update claw animations
+  for (const cw of claws) {
+    if (cw.triggered) cw.anim = Math.min(1, cw.anim + dt * 4);
+  }
+
+  // ── Collisions ──
+  const px = PLAYER_X;
+  const py = laneY(P.lane);
+  const pw = v.w, ph = v.h;
+  const playerLane = Math.round(P.lane);
+
+  // Cloud bombs
+  for (const b of cloudBombs) {
+    if (b.dead) continue;
+    if (b.y > ROAD_TOP - 6 && Math.abs(b.x - px) < pw * 0.5 && Math.abs(b.y - py) < ph * 0.55) {
+      b.dead = true;
+      explosions.push({ x: b.x, y: b.y, t: 0, sz: 32 });
+      damagePlayer(1);
+    } else if (b.y > ROAD_BOT) {
+      b.dead = true;
+      explosions.push({ x: b.x, y: ROAD_BOT - 4, t: 0, sz: 22 });
+    }
+  }
+  cloudBombs = cloudBombs.filter(b => !b.dead);
+
+  // Cannonballs
+  for (const cb of cannonballs) {
+    if (cb.dead) continue;
+    if (Math.abs(cb.x - px) < pw * 0.5 + 14 && Math.abs(cb.y - py) < ph * 0.5 + 6) {
+      cb.dead = true;
+      explosions.push({ x: cb.x, y: cb.y, t: 0, sz: 22 });
+      damagePlayer(1);
+    }
+  }
+  cannonballs = cannonballs.filter(cb => !cb.dead);
+
+  // Claws — only trigger when player is on top
+  for (const cw of claws) {
+    if (cw.triggered) continue;
+    const dx = (cw.dist - P.dist) / POS_SCALE; // screen offset from player
+    // claw is "under" player when dx near 0 and lane matches
+    if (dx > -pw * 0.5 && dx < pw * 0.5 && cw.lane === playerLane) {
+      cw.triggered = true;
+      damagePlayer(1);
+      P.shake = 0.4;
+    }
+  }
+
+  // TNT
+  for (const t of tnts) {
+    if (!t.live) continue;
+    const dx = (t.dist - P.dist) / POS_SCALE;
+    if (dx > -pw * 0.5 - 4 && dx < pw * 0.5 + 4 && t.lane === playerLane) {
+      t.live = false;
+      explosions.push({ x: PLAYER_X, y: laneY(t.lane), t: 0, sz: 60 });
+      damagePlayer(2);
+      // Track collapses: doom wall jumps forward, debris flies
+      doomDist += DOOM_LOSS;
+      P.shake = 0.6;
+      for (let i = 0; i < 14; i++) {
+        crumbles.push({
+          x: PLAYER_X + (Math.random() - 0.5) * 80,
+          y: laneY(t.lane) + (Math.random() - 0.5) * 30,
+          vx: (Math.random() - 0.5) * 240,
+          vy: -200 - Math.random() * 120,
+          sz: 6 + Math.random() * 10,
+          t: 0
+        });
+      }
+    }
+  }
+
+  // Rocks
+  for (const r of rocks) {
+    if (r.got) continue;
+    const dx = (r.dist - P.dist) / POS_SCALE;
+    if (dx > -pw * 0.5 && dx < pw * 0.5 && Math.abs(laneY(r.lane) - py) < LANE_H * 0.55) {
+      r.got = true;
+      P.score += 25;
+      P.money += 5;
+    }
+  }
+
+  // Bike pickups
+  for (const bp of bikePickups) {
+    if (bp.got) continue;
+    const dx = (bp.dist - P.dist) / POS_SCALE;
+    if (dx > -pw * 0.5 && dx < pw * 0.5 && Math.abs(laneY(bp.lane) - py) < LANE_H * 0.55) {
+      bp.got = true;
+      P.score += 100;
+      P.money += 25;
+      if (P.hearts < P.maxHearts && Math.random() < 0.4) P.hearts++;
+    }
+  }
+
+  // Score for distance
+  P.score += Math.floor(P.speed * 0.05);
+
+  // Death check
+  if (P.hearts <= 0) {
+    gameState = 'gameover';
+    endTimer = 0;
+  }
+}
+
+function damagePlayer(n) {
+  if (P.invuln > 0) return;
+  P.hearts -= n;
+  P.invuln = 1.0;
+  flashTimer = 0.25;
+  P.shake = Math.max(P.shake, 0.3);
+}
+
+function spawnCannonball() {
+  const lane = Math.floor(Math.random() * N_LANES);
+  const fromLeft = Math.random() > 0.5;
+  const speed = 200 + Math.random() * 80;
+  cannonballs.push({ x: fromLeft ? -28 : W + 28, y: laneY(lane), vx: fromLeft ? speed : -speed });
+  cannonPuffs.push({ x: fromLeft ? 0 : W, y: laneY(lane), timer: 0.45 });
+}
+
+// ============================================================
+//  DRAW
+// ============================================================
+function draw() {
+  // Sky
+  const grad = ctx.createLinearGradient(0, 0, 0, ROAD_TOP);
+  grad.addColorStop(0, '#7ec8e3');
+  grad.addColorStop(1, '#fcd9a0');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, ROAD_TOP);
+
+  // Distant hills
+  drawHills();
+
+  // Road
+  drawRoad();
+
+  if (gameState === 'select') {
+    drawSelect();
+    return;
+  }
+
+  // shake offset
+  let sx = 0, sy = 0;
+  if (P.shake > 0) {
+    sx = (Math.random() - 0.5) * 8 * P.shake;
+    sy = (Math.random() - 0.5) * 8 * P.shake;
+  }
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  // World hazards/pickups (track-aligned)
+  drawTrackObjects();
+
+  // Doom wall
+  drawDoomWall();
+
+  // Player
+  drawPlayer();
+
+  // Cannonballs + puffs
+  drawCannonballs();
+
+  // Cloud bombs
+  drawCloudBombs();
+
+  // Clouds (drawn over for foreground feel)
+  drawClouds();
+
+  // Explosions
+  drawExplosions();
+
+  // Crumbles
+  drawCrumbles();
+
+  ctx.restore();
+
+  // HUD (no shake)
+  drawHUD();
+
+  if (flashTimer > 0) {
+    ctx.fillStyle = `rgba(255, 60, 60, ${flashTimer * 1.2})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  if (gameState === 'countdown') drawCountdown();
+  if (gameState === 'win')       drawWin();
+  if (gameState === 'gameover')  drawGameOver();
+}
+
+function drawHills() {
+  ctx.fillStyle = '#8aa86a';
+  for (let i = 0; i < 5; i++) {
+    const offs = ((scrollX * 0.15) + i * 260) % (W + 260) - 130;
+    const x = W - offs;
+    ctx.beginPath();
+    ctx.arc(x, ROAD_TOP, 110 + (i*7)%30, Math.PI, 0);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#6b8a4a';
+  for (let i = 0; i < 6; i++) {
+    const offs = ((scrollX * 0.28) + i * 200) % (W + 200) - 100;
+    const x = W - offs;
+    ctx.beginPath();
+    ctx.arc(x, ROAD_TOP + 8, 70 + (i*11)%24, Math.PI, 0);
+    ctx.fill();
+  }
+}
+
+function drawRoad() {
+  // Grass band
+  ctx.fillStyle = '#3d6b2a';
+  ctx.fillRect(0, ROAD_TOP - 6, W, 6);
+  ctx.fillRect(0, ROAD_BOT, W, H - ROAD_BOT);
+
+  // Asphalt
+  ctx.fillStyle = '#3a3a3a';
+  ctx.fillRect(0, ROAD_TOP, W, ROAD_H);
+
+  // Lane lines
+  ctx.strokeStyle = '#fff8aa';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([28, 22]);
+  for (let i = 1; i < N_LANES; i++) {
+    const y = ROAD_TOP + i * LANE_H;
+    ctx.lineDashOffset = -scrollX % 50;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Edge stripes
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillRect(0, ROAD_TOP - 3, W, 3);
+  ctx.fillRect(0, ROAD_BOT, W, 3);
+
+  // Side cannons (visual indicators where cannonballs come from)
+  drawSideCannons();
+}
+
+function drawSideCannons() {
+  for (let i = 0; i < N_LANES; i++) {
+    const y = laneY(i);
+    // Left cannon
+    ctx.fillStyle = '#222';
+    ctx.fillRect(-2, y - 9, 18, 18);
+    ctx.fillStyle = '#444';
+    ctx.fillRect(-8, y - 12, 8, 24);
+    // Right cannon
+    ctx.fillStyle = '#222';
+    ctx.fillRect(W - 16, y - 9, 18, 18);
+    ctx.fillStyle = '#444';
+    ctx.fillRect(W, y - 12, 8, 24);
+  }
+}
+
+function drawTrackObjects() {
+  // Rocks
+  for (const r of rocks) {
+    if (r.got) continue;
+    const x = PLAYER_X + (r.dist - P.dist) / POS_SCALE;
+    if (x < -40 || x > W + 40) continue;
+    drawRock(x, laneY(r.lane));
+  }
+  // TNT
+  for (const t of tnts) {
+    if (!t.live) continue;
+    const x = PLAYER_X + (t.dist - P.dist) / POS_SCALE;
+    if (x < -40 || x > W + 40) continue;
+    drawTNT(x, laneY(t.lane), raceTime);
+  }
+  // Bike pickups
+  for (const bp of bikePickups) {
+    if (bp.got) continue;
+    const x = PLAYER_X + (bp.dist - P.dist) / POS_SCALE;
+    if (x < -40 || x > W + 40) continue;
+    drawBikePickup(x, laneY(bp.lane));
+  }
+  // Claws (hidden until triggered)
+  for (const cw of claws) {
+    if (!cw.triggered) continue;
+    const x = PLAYER_X + (cw.dist - P.dist) / POS_SCALE;
+    if (x < -60 || x > W + 60) continue;
+    drawClaw(x, laneY(cw.lane), cw.anim);
+  }
+}
+
+function drawRock(x, y) {
+  ctx.fillStyle = '#8a7a66';
+  ctx.beginPath();
+  ctx.ellipse(x, y + 4, 14, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#a8987c';
+  ctx.beginPath();
+  ctx.ellipse(x - 2, y - 2, 12, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // sparkle to show it's collectible
+  ctx.fillStyle = '#fff7b0';
+  ctx.fillRect(x + 4, y - 6, 2, 2);
+}
+
+function drawTNT(x, y, t) {
+  const blink = (Math.sin(t * 8) + 1) * 0.5;
+  ctx.fillStyle = '#7a1212';
+  ctx.fillRect(x - 14, y - 14, 28, 28);
+  ctx.fillStyle = '#b22222';
+  ctx.fillRect(x - 14, y - 14, 28, 8);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 10px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('TNT', x, y + 4);
+  // fuse
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x, y - 14); ctx.lineTo(x + 4, y - 22); ctx.stroke();
+  ctx.fillStyle = blink > 0.5 ? '#ffaa22' : '#ff4400';
+  ctx.beginPath(); ctx.arc(x + 4, y - 22, 3, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawBikePickup(x, y) {
+  const bob = Math.sin(raceTime * 5 + x * 0.01) * 2;
+  ctx.save();
+  ctx.translate(x, y + bob);
+  // glow halo
+  ctx.fillStyle = 'rgba(255, 220, 80, 0.35)';
+  ctx.beginPath(); ctx.arc(0, 0, 22, 0, Math.PI * 2); ctx.fill();
+  // bike
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(-7, 4, 6, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(7, 4, 6, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-7, 4); ctx.lineTo(0, -4); ctx.lineTo(7, 4); ctx.lineTo(2, -4); ctx.lineTo(0, -4);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawClaw(x, y, anim) {
+  // crack in road
+  ctx.fillStyle = '#111';
+  ctx.beginPath();
+  ctx.ellipse(x, y + 16, 22, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // claw rises out of crack
+  const lift = anim * 22;
+  ctx.fillStyle = '#3a2a1a';
+  ctx.fillRect(x - 3, y + 14 - lift, 6, lift + 4);
+  // claw fingers
+  ctx.fillStyle = '#5a4226';
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y + 14 - lift);
+  ctx.lineTo(x - 5, y - lift);
+  ctx.lineTo(x + 5, y - lift);
+  ctx.lineTo(x + 12, y + 14 - lift);
+  ctx.closePath();
+  ctx.fill();
+  // talons
+  ctx.fillStyle = '#eaeaea';
+  ctx.beginPath();
+  ctx.moveTo(x - 12, y + 14 - lift); ctx.lineTo(x - 14, y + 6 - lift); ctx.lineTo(x - 8, y + 10 - lift);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + 12, y + 14 - lift); ctx.lineTo(x + 14, y + 6 - lift); ctx.lineTo(x + 8, y + 10 - lift);
+  ctx.fill();
+}
+
+function drawClouds() {
+  for (const c of clouds) drawCloud(c.x, c.y, c.sz);
+}
+function drawCloud(x, y, s) {
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(x, y, s * 0.55, 0, Math.PI * 2);
+  ctx.arc(x + s * 0.45, y - 4, s * 0.45, 0, Math.PI * 2);
+  ctx.arc(x - s * 0.45, y - 2, s * 0.42, 0, Math.PI * 2);
+  ctx.arc(x + s * 0.15, y + 8, s * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+  // grumpy eyes (this cloud means you harm)
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x - 8, y - 2, 3, 3);
+  ctx.fillRect(x + 5, y - 2, 3, 3);
+}
+
+function drawCloudBombs() {
+  for (const b of cloudBombs) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.spin);
+    if (b.kind === 'bomb') {
+      ctx.fillStyle = '#222';
+      ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#aa6622'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(2, -14); ctx.stroke();
+      ctx.fillStyle = '#ff7a22';
+      ctx.beginPath(); ctx.arc(2, -14, 2, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.fillStyle = '#444';
+      ctx.fillRect(-9, -6, 18, 12);
+      ctx.fillRect(-11, -4, 4, 8);
+      ctx.fillRect(7, -4, 4, 8);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 6px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('ACME', 0, 2);
+    }
+    ctx.restore();
+  }
+}
+
+function drawCannonballs() {
+  for (const p of cannonPuffs) {
+    const a = p.timer / 0.45;
+    ctx.fillStyle = `rgba(180,180,180,${a})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 14 * (1 - a + 0.3), 0, Math.PI * 2); ctx.fill();
+  }
+  for (const cb of cannonballs) {
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(cb.x, cb.y, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#444';
+    ctx.beginPath(); ctx.arc(cb.x - 2, cb.y - 2, 3, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawExplosions() {
+  for (const e of explosions) {
+    const a = 1 - e.t / 0.6;
+    const r = e.sz * (e.t / 0.6 + 0.3);
+    ctx.fillStyle = `rgba(255,180,60,${a})`;
+    ctx.beginPath(); ctx.arc(e.x, e.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,80,30,${a * 0.8})`;
+    ctx.beginPath(); ctx.arc(e.x, e.y, r * 0.6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,200,${a})`;
+    ctx.beginPath(); ctx.arc(e.x, e.y, r * 0.3, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawCrumbles() {
+  for (const c of crumbles) {
+    const a = 1 - c.t / 1.5;
+    ctx.fillStyle = `rgba(50,50,50,${a})`;
+    ctx.fillRect(c.x, c.y, c.sz, c.sz);
+  }
+}
+
+function drawDoomWall() {
+  const x = PLAYER_X + (doomDist - P.dist) / POS_SCALE;
+  if (x < -200) return;
+  // collapsed track region (everything left of x is gone)
+  const cx = Math.max(-2, x);
+  // Fill chasm
+  ctx.fillStyle = '#1a0a0a';
+  ctx.fillRect(0, ROAD_TOP, cx, ROAD_H);
+  // jagged crumbling edge
+  ctx.fillStyle = '#3a3a3a';
+  ctx.beginPath();
+  ctx.moveTo(cx, ROAD_TOP);
+  let y = ROAD_TOP;
+  while (y < ROAD_BOT) {
+    const d = (Math.sin(y * 0.7 + raceTime * 6) + 1) * 8 + 4;
+    ctx.lineTo(cx + d, y);
+    y += 8;
+  }
+  ctx.lineTo(cx, ROAD_BOT);
+  ctx.closePath();
+  ctx.fill();
+  // ember sparks at edge
+  ctx.fillStyle = '#ff7722';
+  for (let i = 0; i < 10; i++) {
+    const sy = ROAD_TOP + Math.random() * ROAD_H;
+    const sx = cx + Math.random() * 14;
+    ctx.fillRect(sx, sy, 2, 2);
+  }
+  // warning text
+  ctx.fillStyle = '#ff3333';
+  ctx.font = 'bold 14px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText('!', cx + 4, ROAD_TOP - 4);
+}
+
+// ── Player draw with vehicle + boy ──────────────────────
+function drawPlayer() {
+  const v = curVeh();
+  const x = PLAYER_X;
+  const y = laneY(P.lane);
+  const blink = P.invuln > 0 && Math.floor(P.invuln * 16) % 2 === 0;
+  if (blink) ctx.globalAlpha = 0.35;
+  v.draw(x, y, true);
+  ctx.globalAlpha = 1;
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(x, y + v.h * 0.5 + 4, v.w * 0.5, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// blonde-haired boy passenger
+function drawBoy(x, y, scale) {
+  scale = scale || 1;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  // body
+  ctx.fillStyle = '#3477e0';
+  ctx.fillRect(-5, -2, 10, 9);
+  // head
+  ctx.fillStyle = '#f5d3a8';
+  ctx.beginPath(); ctx.arc(0, -8, 5, 0, Math.PI * 2); ctx.fill();
+  // blonde hair
+  ctx.fillStyle = '#f7d24a';
+  ctx.beginPath();
+  ctx.arc(0, -10, 5.2, Math.PI, 0);
+  ctx.fill();
+  ctx.fillRect(-5.2, -10, 10.4, 3);
+  // little tuft
+  ctx.beginPath();
+  ctx.moveTo(2, -13); ctx.lineTo(4, -16); ctx.lineTo(5, -12);
+  ctx.fill();
+  // eyes
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-2, -8, 1.4, 1.4);
+  ctx.fillRect(1, -8, 1.4, 1.4);
+  // mouth (worried lil O)
+  ctx.fillStyle = '#7a3a3a';
+  ctx.beginPath(); ctx.arc(0, -5, 0.9, 0, Math.PI * 2); ctx.fill();
+  // arms
+  ctx.fillStyle = '#3477e0';
+  ctx.fillRect(-7, -1, 2, 5);
+  ctx.fillRect(5, -1, 2, 5);
+  ctx.restore();
+}
+
+// ────────── vehicle sprites ──────────
+function wheel(x, y, r) {
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#888';
+  ctx.beginPath(); ctx.arc(x, y, r * 0.45, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawCar(x, y) {
+  // body
+  ctx.fillStyle = '#ee3a3a';
+  ctx.fillRect(x - 36, y - 12, 72, 22);
+  // hood/cab shape
+  ctx.fillStyle = '#cc1f1f';
+  ctx.beginPath();
+  ctx.moveTo(x - 30, y - 12);
+  ctx.lineTo(x - 14, y - 22);
+  ctx.lineTo(x + 14, y - 22);
+  ctx.lineTo(x + 28, y - 12);
+  ctx.closePath();
+  ctx.fill();
+  // window
+  ctx.fillStyle = '#9fdcff';
+  ctx.fillRect(x - 12, y - 20, 24, 8);
+  // headlight
+  ctx.fillStyle = '#fff7aa';
+  ctx.fillRect(x + 30, y - 8, 4, 4);
+  // wheels
+  wheel(x - 22, y + 12, 7);
+  wheel(x + 22, y + 12, 7);
+  // boy peeking out of the sunroof
+  drawBoy(x, y - 22, 1);
+}
+
+function drawTruck(x, y) {
+  // bed
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x - 46, y - 10, 50, 20);
+  ctx.fillStyle = '#444';
+  ctx.fillRect(x - 44, y - 8, 46, 4);
+  // cab
+  ctx.fillStyle = '#1f7a1f';
+  ctx.fillRect(x + 4, y - 22, 38, 32);
+  // window
+  ctx.fillStyle = '#bfe7ff';
+  ctx.fillRect(x + 8, y - 18, 26, 10);
+  // headlight
+  ctx.fillStyle = '#fff7aa';
+  ctx.fillRect(x + 40, y - 4, 4, 4);
+  // wheels
+  wheel(x - 30, y + 12, 8);
+  wheel(x + 30, y + 12, 8);
+  // boy at the wheel
+  drawBoy(x + 22, y - 22, 0.95);
+}
+
+function drawSemi(x, y) {
+  // trailer
+  ctx.fillStyle = '#dcdcdc';
+  ctx.fillRect(x - 70, y - 22, 90, 38);
+  ctx.strokeStyle = '#888'; ctx.lineWidth = 1;
+  for (let i = -60; i < 18; i += 10) {
+    ctx.beginPath(); ctx.moveTo(x + i, y - 22); ctx.lineTo(x + i, y + 16); ctx.stroke();
+  }
+  // gap
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x + 20, y - 8, 6, 24);
+  // cab
+  ctx.fillStyle = '#1a47b8';
+  ctx.fillRect(x + 26, y - 22, 48, 38);
+  // window
+  ctx.fillStyle = '#bfe7ff';
+  ctx.fillRect(x + 32, y - 18, 36, 12);
+  // wheels (lots)
+  wheel(x - 56, y + 18, 8);
+  wheel(x - 36, y + 18, 8);
+  wheel(x - 6,  y + 18, 8);
+  wheel(x + 32, y + 18, 8);
+  wheel(x + 64, y + 18, 8);
+  // smoke stack
+  ctx.fillStyle = '#444';
+  ctx.fillRect(x + 30, y - 30, 4, 10);
+  // boy on top of cab
+  drawBoy(x + 50, y - 22, 0.85);
+}
+
+function drawTrain(x, y) {
+  // cars behind
+  ctx.fillStyle = '#7a3a3a';
+  ctx.fillRect(x - 65, y - 18, 50, 32);
+  ctx.fillStyle = '#aa5555';
+  ctx.fillRect(x - 64, y - 16, 48, 6);
+  // engine
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(x - 14, y - 22, 60, 38);
+  // boiler / round front
+  ctx.fillStyle = '#222';
+  ctx.beginPath();
+  ctx.arc(x + 46, y - 4, 22, -Math.PI / 2, Math.PI / 2);
+  ctx.fill();
+  // chimney
+  ctx.fillStyle = '#444';
+  ctx.fillRect(x + 22, y - 36, 8, 14);
+  ctx.fillStyle = '#bbb';
+  ctx.beginPath(); ctx.arc(x + 26, y - 38, 7, 0, Math.PI * 2); ctx.fill();
+  // window
+  ctx.fillStyle = '#bfe7ff';
+  ctx.fillRect(x - 8, y - 18, 14, 10);
+  // wheels (big driving wheel)
+  wheel(x - 50, y + 14, 7);
+  wheel(x - 28, y + 14, 7);
+  wheel(x + 4,  y + 16, 10);
+  wheel(x + 30, y + 16, 10);
+  // boy in cab
+  drawBoy(x - 1, y - 22, 0.95);
+}
+
+function drawPotty(x, y) {
+  // green box
+  ctx.fillStyle = '#2d7a3a';
+  ctx.fillRect(x - 20, y - 32, 40, 56);
+  ctx.fillStyle = '#1f5b2c';
+  ctx.fillRect(x - 20, y - 32, 40, 6);
+  ctx.fillRect(x - 20, y + 18, 40, 6);
+  // door
+  ctx.fillStyle = '#256830';
+  ctx.fillRect(x - 14, y - 24, 28, 40);
+  // vent
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillRect(x - 4, y - 22, 8, 4);
+  // sign
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 8px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('OCCUPIED', x, y - 14);
+  // wheels (tiny)
+  wheel(x - 14, y + 24, 6);
+  wheel(x + 14, y + 24, 6);
+  // boy poking out the top
+  drawBoy(x, y - 32, 0.85);
+}
+
+function drawCouch(x, y) {
+  // couch base
+  ctx.fillStyle = '#7a3a3a';
+  ctx.fillRect(x - 48, y - 4, 96, 22);
+  // backrest
+  ctx.fillStyle = '#a04444';
+  ctx.fillRect(x - 48, y - 22, 96, 22);
+  // armrests
+  ctx.fillStyle = '#5a2828';
+  ctx.fillRect(x - 52, y - 10, 8, 28);
+  ctx.fillRect(x + 44, y - 10, 8, 28);
+  // cushions
+  ctx.fillStyle = '#8a3535';
+  ctx.fillRect(x - 42, y - 2, 26, 14);
+  ctx.fillRect(x - 13, y - 2, 26, 14);
+  ctx.fillRect(x + 16, y - 2, 26, 14);
+  // wheels (mismatched, of course)
+  wheel(x - 32, y + 20, 6);
+  wheel(x + 32, y + 20, 6);
+  // boy sitting on the couch driving a steering wheel
+  drawBoy(x, y - 18, 1);
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y - 4, 6, 0, Math.PI * 2); ctx.stroke();
+}
+
+// ────────── HUD ──────────
+function drawHUD() {
+  // Top bar
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, W, 36);
+
+  // Hearts: draw up to 10 little ones, then a numeric counter for the rest
+  const drawn = Math.min(10, P.maxHearts);
+  for (let i = 0; i < drawn; i++) {
+    const filled = i < Math.min(P.hearts, drawn);
+    drawHeart(14 + i * 22, 18, filled);
+  }
+  ctx.fillStyle = '#ff5566';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(`${P.hearts} / ${P.maxHearts}`, 14 + drawn * 22 + 6, 23);
+
+  // Score / money
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText(`SCORE ${P.score}`, W - 14, 16);
+  ctx.fillStyle = '#ffd24a';
+  ctx.fillText(`$ ${P.money}`, W - 14, 30);
+
+  // Distance / progress bar
+  ctx.textAlign = 'center';
+  const pct = clamp(P.dist / TRACK_LEN, 0, 1);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(W * 0.35, 44, W * 0.3, 8);
+  ctx.fillStyle = '#33dd66';
+  ctx.fillRect(W * 0.35, 44, W * 0.3 * pct, 8);
+  // doom marker on bar
+  const doomPct = clamp(doomDist / TRACK_LEN, 0, 1);
+  ctx.fillStyle = '#ff4444';
+  ctx.fillRect(W * 0.35 + W * 0.3 * doomPct - 1, 42, 3, 12);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 10px Arial';
+  ctx.fillText(`${Math.floor(pct * 100)}%`, W * 0.5, 62);
+
+  // Speed
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(`SPD ${P.speed.toFixed(1)}`, 240, 56);
+}
+
+function drawHeart(x, y, full) {
+  ctx.fillStyle = full ? '#ff3344' : '#444';
+  ctx.beginPath();
+  ctx.moveTo(x, y + 6);
+  ctx.bezierCurveTo(x - 12, y - 4, x - 8, y - 10, x, y - 4);
+  ctx.bezierCurveTo(x + 8, y - 10, x + 12, y - 4, x, y + 6);
+  ctx.fill();
+}
+
+// ────────── select / countdown / win / lose ──────────
+function drawSelect() {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#ffd24a';
+  ctx.font = 'bold 36px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('CHOOSE YOUR RIDE', W / 2, 70);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 12px Arial';
+  ctx.fillText('← →  to switch     SPACE to start', W / 2, 100);
+
+  // Show vehicles in a row
+  const slotW = W / VEHICLES.length;
+  for (let i = 0; i < VEHICLES.length; i++) {
+    const v = VEHICLES[i];
+    const cx = slotW * (i + 0.5);
+    const cy = H * 0.55;
+    const sel = i === selectIdx;
+    if (sel) {
+      ctx.fillStyle = 'rgba(255,210,74,0.18)';
+      ctx.fillRect(cx - slotW * 0.45, cy - 80, slotW * 0.9, 160);
+      ctx.strokeStyle = '#ffd24a'; ctx.lineWidth = 3;
+      ctx.strokeRect(cx - slotW * 0.45, cy - 80, slotW * 0.9, 160);
+    }
+    v.draw(cx, cy, false);
+    ctx.fillStyle = sel ? '#ffd24a' : '#ddd';
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText(v.name, cx, cy + 64);
+    ctx.fillStyle = '#bbb';
+    ctx.font = '10px Arial';
+    ctx.fillText(v.blurb, cx, cy + 78);
+    ctx.fillStyle = '#999';
+    ctx.fillText(`spd ${v.maxSpd}  acc ${v.accel.toFixed(2)}`, cx, cy + 92);
+  }
+
+  // Mission briefing
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 13px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('clouds drop bombs  ·  cannons shoot from the sides', W / 2, H - 70);
+  ctx.fillText('claws hide in the road  ·  TNT blows up the track behind you', W / 2, H - 52);
+  ctx.fillStyle = '#ff7766';
+  ctx.fillText('don\'t slow down. the road is eating itself.', W / 2, H - 30);
+}
+
+function drawCountdown() {
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffd24a';
+  ctx.font = 'bold 140px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(countdown > 0 ? countdown : 'GO!', W / 2, H / 2);
+  ctx.textBaseline = 'alphabetic';
+}
+
+function drawWin() {
+  ctx.fillStyle = 'rgba(0, 30, 0, 0.65)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#7eff7a';
+  ctx.font = 'bold 56px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('YOU MADE IT!', W / 2, H / 2 - 40);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText(`SCORE: ${P.score}    $: ${P.money}    HEARTS LEFT: ${P.hearts}`, W / 2, H / 2 + 4);
+  ctx.fillStyle = '#ffd24a';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillText('SPACE — pick another ride', W / 2, H / 2 + 40);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(40, 0, 0, 0.65)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ff5555';
+  ctx.font = 'bold 56px Arial';
+  ctx.textAlign = 'center';
+  const msg = doomDist >= P.dist ? 'THE ROAD ATE YOU' : 'JEFFED.';
+  ctx.fillText(msg, W / 2, H / 2 - 40);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText(`SCORE: ${P.score}    $: ${P.money}    DIST: ${Math.floor(P.dist)}`, W / 2, H / 2 + 4);
+  ctx.fillStyle = '#ffd24a';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillText('SPACE — try again', W / 2, H / 2 + 40);
+}
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+    a: 'Space', b: 'Space', start: 'Space'
+  }]
+});
+</script>
+</body>
+</html>

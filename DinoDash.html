@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Dino Diary — A Walk Through the Age of Dinosaurs</title>
+<style>
+  body { margin:0; background:#10121a; color:#fff; font-family:system-ui, sans-serif;
+         display:flex; flex-direction:column; align-items:center; padding:8px; user-select:none; }
+  h1 { margin:6px; color:#ffd166; text-shadow:2px 2px 0 #000; font-size:22px; text-align:center; }
+  #hud { font-size:18px; margin:4px; min-height:24px; letter-spacing:1px; }
+  canvas { background:#111; border:4px solid #5a3a1a; box-shadow:0 0 18px #000; border-radius:6px; }
+  .row { margin:6px; }
+  button { background:#ffd166; color:#10121a; border:0; padding:9px 16px; font-weight:bold;
+           font-size:15px; border-radius:6px; cursor:pointer; margin:0 4px; }
+  #legend { font-size:13px; color:#9bb; max-width:720px; text-align:center; margin-top:4px; line-height:1.6; }
+  b.k { color:#ffd166; }
+</style>
+</head>
+<body>
+<h1>🦖 Dino Diary — A Walk Through the Age of Dinosaurs 🦕</h1>
+<div id="hud"></div>
+<canvas id="game" width="860" height="400"></canvas>
+<div class="row">
+  <button id="startBtn">START (or press Space)</button>
+</div>
+<div id="legend">
+  Your little explorer walks along by itself. When you meet a dinosaur, a <b class="k">diary card</b> pops up so you can read all about it.<br>
+  Press <b class="k">Space / A button</b> to turn the page and keep walking. Press <b class="k">Up / jump</b> anytime just for fun. Every dinosaur here really lived — and they all stay friendly!
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const hudEl = document.getElementById('hud');
+const startBtn = document.getElementById('startBtn');
+
+const CW = canvas.width, CH = canvas.height;
+const GROUND = 330;           // ground line on screen
+
+// ---- The three real ages of dinosaurs ----
+const AGES = [
+  { name:'TRIASSIC',   span:'252 to 201 million years ago', sky:'#c96b3f', sky2:'#7a3b26', ground:'#8a5a34', hill:'#6e4327' },
+  { name:'JURASSIC',   span:'201 to 145 million years ago', sky:'#5a86a8', sky2:'#274b63', ground:'#3f6b3a', hill:'#2f5230' },
+  { name:'CRETACEOUS', span:'145 to 66 million years ago',  sky:'#7a5a9a', sky2:'#3a2b55', ground:'#5a6b3a', hill:'#3f4f2a' },
+];
+
+// ---- The dinosaurs (all real!), in the order you meet them ----
+const DINOS = [
+  { key:'coelophysis',  name:'Coelophysis',  say:'SEE-lo-FY-sis',      age:0, mya:'about 215 million years ago',
+    fact:'One of the earliest dinosaurs. It was slim and speedy, ran on two legs, and hunted small animals in packs.', lift:0 },
+  { key:'plateosaurus', name:'Plateosaurus', say:'PLAT-ee-oh-SORE-us', age:0, mya:'about 214 million years ago',
+    fact:'A big plant-eater that could stand up on its back legs to reach leaves high in the plants.', lift:0 },
+  { key:'stegosaurus',  name:'Stegosaurus',  say:'STEG-oh-SORE-us',    age:1, mya:'about 150 million years ago',
+    fact:'Famous for the row of big plates along its back and four sharp spikes on its tail to swing at attackers.', lift:0 },
+  { key:'allosaurus',   name:'Allosaurus',   say:'AL-oh-SORE-us',      age:1, mya:'about 150 million years ago',
+    fact:'A fierce Jurassic hunter with strong legs, grabbing claws, and a mouth full of curved teeth.', lift:0 },
+  { key:'brachiosaurus',name:'Brachiosaurus',say:'BRACK-ee-oh-SORE-us',age:1, mya:'about 154 million years ago',
+    fact:'So tall it could peek over the treetops! Its front legs were longer than its back legs, like a giraffe.', lift:0 },
+  { key:'diplodocus',   name:'Diplodocus',   say:'dip-LOD-oh-kus',     age:1, mya:'about 152 million years ago',
+    fact:'One of the longest dinosaurs ever, with a super-long neck and a whip-like tail to keep it balanced.', lift:0 },
+  { key:'triceratops',  name:'Triceratops',  say:'try-SERR-a-tops',    age:2, mya:'about 67 million years ago',
+    fact:'Three horns — two long ones over its eyes and one on its nose — plus a big bony frill to protect its neck.', lift:0 },
+  { key:'velociraptor', name:'Velociraptor', say:'veh-LOSS-ih-rap-tor',age:2, mya:'about 75 million years ago',
+    fact:'A small, feathery hunter, quick and clever, with a big curved claw on each foot for catching prey.', lift:0 },
+  { key:'ankylosaurus', name:'Ankylosaurus', say:'an-KY-loh-SORE-us',  age:2, mya:'about 66 million years ago',
+    fact:'Covered head to tail in bony armor, with a heavy club on its tail it could swing like a hammer.', lift:0 },
+  { key:'spinosaurus',  name:'Spinosaurus',  say:'SPINE-oh-SORE-us',   age:2, mya:'about 99 million years ago',
+    fact:'Even bigger than T. rex! It had a tall sail on its back and a long crocodile-like snout for catching fish.', lift:0 },
+  { key:'tyrannosaurus',name:'Tyrannosaurus rex', say:'tie-RAN-oh-SORE-us', age:2, mya:'about 67 million years ago',
+    fact:'The mighty T. rex! Huge jaws packed with teeth, a strong tail for balance, and two tiny little arms.', lift:0 },
+  { key:'pteranodon',   name:'Pteranodon',   say:'teh-RAN-oh-don',     age:2, mya:'about 86 million years ago',
+    fact:'A flying reptile (not really a dinosaur) that glided over the sea on huge wings, with a long crest on its head.', lift:70 },
+];
+
+// natural drawing height of each, used to size the picture nicely
+const NAT_H = { coelophysis:66, plateosaurus:126, stegosaurus:96, allosaurus:104, brachiosaurus:160,
+  diplodocus:72, triceratops:112, velociraptor:78, ankylosaurus:62, spinosaurus:132, tyrannosaurus:122, pteranodon:70 };
+
+const WORLD_GAP = 620;
+DINOS.forEach((d,i)=> d.worldX = 520 + i*WORLD_GAP);
+const WORLD_END = DINOS[DINOS.length-1].worldX + 360;
+
+let state, player, camX, groundOffset, clouds, foundCount, cardDino, pageArrow;
+
+function reset(){
+  state = 'ready';
+  player = { x:80, y:GROUND, vy:0, onGround:true, run:0 };
+  camX = 0; groundOffset = 0; foundCount = 0; cardDino = null; pageArrow = 0;
+  DINOS.forEach(d=> d.found = false);
+  clouds = [];
+  for (let i=0;i<6;i++) clouds.push({ x:Math.random()*WORLD_END, y:30+Math.random()*100, s:0.3+Math.random()*0.5, r:16+Math.random()*22 });
+}
+
+function currentAgeIdx(){
+  const idx = Math.min(foundCount, DINOS.length-1);
+  return DINOS[idx].age;
+}
+
+// ---------- input ----------
+function pressMain(){
+  if (state === 'ready'){ state = 'walk'; return; }
+  if (state === 'card'){ closeCard(); return; }
+  if (state === 'done'){ reset(); state = 'walk'; return; }
+  if (state === 'walk'){ jump(); return; }
+}
+function jump(){ if (player.onGround){ player.vy = -10.5; player.onGround = false; } }
+function closeCard(){ cardDino.found = true; foundCount++; cardDino = null; state = 'walk'; }
+
+addEventListener('keydown', e=>{
+  const k = e.key.toLowerCase();
+  if (k===' ' || k==='enter' || k==='arrowup' || k==='w'){ pressMain(); e.preventDefault(); }
+});
+
+// ---------- update ----------
+function update(){
+  if (state === 'walk'){
+    player.x += 2.1;
+    player.run = (player.run + 0.18) % (Math.PI*2);
+    // jump physics
+    player.vy += 0.6; player.y += player.vy;
+    if (player.y >= GROUND){ player.y = GROUND; player.vy = 0; player.onGround = true; }
+
+    camX = Math.max(0, Math.min(WORLD_END - CW, player.x - 160));
+    groundOffset = (groundOffset + 2.1) % 40;
+    for (const cl of clouds){ /* clouds are in world space, drift slowly */ cl.x -= cl.s*0.3; if (cl.x < camX-60) cl.x = camX+CW+60; }
+
+    // meet the next dinosaur?
+    if (foundCount < DINOS.length){
+      const next = DINOS[foundCount];
+      if (player.x >= next.worldX - 150){
+        cardDino = next; state = 'card';
+      }
+    } else if (player.x >= WORLD_END - 120){
+      state = 'done';
+    }
+  }
+  if (state === 'card') pageArrow += 0.12;
+}
+
+// ---------- low level draw helpers (used inside flipped coords) ----------
+function E(x,y,rx,ry){ ctx.beginPath(); ctx.ellipse(x,y,rx,ry,0,0,7); ctx.fill(); }
+function C(x,y,r){ ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); }
+function T(ax,ay,bx,by,cx,cy){ ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(bx,by); ctx.lineTo(cx,cy); ctx.closePath(); ctx.fill(); }
+function Rct(x,y,w,h){ ctx.fillRect(x,y,w,h); }
+
+// ---------- each real dinosaur, drawn facing right, feet at y=0, upward = +y ----------
+const DRAW = {
+  coelophysis(){ const b='#c98a4a';
+    ctx.fillStyle=b;
+    T(-12,32,-72,20,-70,14); Rct(-13,24,60,4);           // tail
+    Rct(-4,0,8,34); Rct(-16,0,7,32);                      // legs
+    E(0,42,24,16);                                        // body
+    ctx.beginPath(); ctx.moveTo(12,50); ctx.lineTo(40,72); ctx.lineTo(48,68); ctx.lineTo(18,44); ctx.closePath(); ctx.fill(); // neck
+    ctx.beginPath(); ctx.moveTo(40,72); ctx.lineTo(66,66); ctx.lineTo(66,60); ctx.lineTo(40,66); ctx.closePath(); ctx.fill(); // head
+    ctx.fillStyle='#000'; C(48,68,2); },
+
+  plateosaurus(){ const b='#a86a35';
+    ctx.fillStyle=b;
+    T(-18,40,-92,22,-88,14); Rct(-19,30,74,4);            // tail
+    Rct(-8,0,14,40); Rct(-26,0,12,36);                    // legs
+    E(-2,54,40,30);                                       // body
+    ctx.beginPath(); ctx.moveTo(22,74); ctx.lineTo(52,120); ctx.lineTo(64,116); ctx.lineTo(34,66); ctx.closePath(); ctx.fill(); // neck
+    E(64,120,15,11);                                      // head
+    Rct(20,46,4,12);                                      // little arm
+    ctx.fillStyle='#000'; C(68,122,2.5); },
+
+  stegosaurus(){ const b='#5a8a4a';
+    ctx.fillStyle=b;
+    T(-18,40,-84,32,-82,24); Rct(-19,30,66,4);            // tail
+    Rct(-22,0,12,30); Rct(-6,0,12,30); Rct(22,0,12,30); Rct(38,0,12,30); // legs
+    E(6,50,44,28);                                        // body (arched)
+    E(54,40,16,12);                                       // small head
+    ctx.fillStyle='#e0a24a';                              // back plates
+    for(let i=0;i<5;i++){ const x=-22+i*15; T(x,74,x+8,98,x+16,74); }
+    ctx.fillStyle='#efe6c8';                              // tail spikes
+    T(-72,36,-88,46,-70,28); T(-66,38,-82,30,-64,26);
+    ctx.fillStyle='#000'; C(58,42,2.5); },
+
+  allosaurus(){ const b='#7a5a3f';
+    ctx.fillStyle=b;
+    T(-16,40,-92,24,-88,16); Rct(-17,30,74,4);            // tail
+    Rct(-6,0,14,40); Rct(-22,0,12,38);                    // legs
+    E(0,56,36,28);                                        // body
+    ctx.beginPath(); ctx.moveTo(20,74); ctx.lineTo(46,98); ctx.lineTo(60,92); ctx.lineTo(30,62); ctx.closePath(); ctx.fill(); // neck
+    E(60,92,20,13);                                       // head
+    T(70,96,88,92,70,84);                                 // snout
+    ctx.fillStyle='#fff'; for(let i=0;i<4;i++){ const x=62+i*6; T(x,84,x+2,79,x+4,84); } // teeth
+    ctx.fillStyle=b; Rct(22,50,4,12);                     // tiny arm
+    ctx.fillStyle='#000'; C(64,94,2.5); },
+
+  brachiosaurus(){ const b='#6a9a75';
+    ctx.fillStyle=b;
+    Rct(-26,0,14,46); Rct(-8,0,14,52); Rct(20,0,14,62); Rct(38,0,14,58); // legs (front taller)
+    E(4,64,44,30);                                        // body
+    T(-20,60,-80,44,-76,36); Rct(-21,50,20,4);            // tail
+    ctx.beginPath(); ctx.moveTo(30,80); ctx.lineTo(58,158); ctx.lineTo(72,156); ctx.lineTo(44,74); ctx.closePath(); ctx.fill(); // long neck
+    E(70,158,15,11);                                      // head
+    ctx.fillStyle='#000'; C(76,160,2.5); },
+
+  diplodocus(){ const b='#6f9a58';
+    ctx.fillStyle=b;
+    Rct(-30,0,12,34); Rct(-12,0,12,34); Rct(18,0,12,34); Rct(34,0,12,34); // legs
+    E(2,46,42,22);                                        // body
+    T(-24,46,-116,30,-114,24); Rct(-25,38,26,4);          // very long tail
+    ctx.beginPath(); ctx.moveTo(28,54); ctx.lineTo(96,70); ctx.lineTo(100,62); ctx.lineTo(30,44); ctx.closePath(); ctx.fill(); // long neck
+    E(100,68,13,9);                                       // head
+    ctx.fillStyle='#000'; C(104,70,2); },
+
+  triceratops(){ const b='#7a8a4a', frill='#96a15a';
+    ctx.fillStyle=b;
+    T(-20,42,-72,28,-68,20); Rct(-21,34,20,4);            // tail
+    Rct(-26,0,12,34); Rct(-10,0,12,34); Rct(24,0,12,34); Rct(40,0,12,34); // legs
+    E(2,50,44,30);                                        // body
+    ctx.fillStyle=frill; ctx.beginPath(); ctx.arc(54,66,28,-1.5,1.9); ctx.fill(); // frill
+    ctx.fillStyle=b; E(70,60,20,18);                      // head
+    T(86,56,100,52,86,46);                                // beak
+    ctx.fillStyle='#efe6c8'; T(82,62,88,82,92,62);        // nose horn
+    T(64,74,60,110,72,76); T(76,74,86,110,88,76);         // two big brow horns
+    ctx.fillStyle='#000'; C(74,62,3); },
+
+  velociraptor(){ const b='#9a8a55', fe='#b89a5c';
+    ctx.fillStyle=b;
+    T(-14,36,-72,44,-70,38); Rct(-15,30,60,4);            // stiff tail
+    Rct(-4,0,10,34);                                      // leg
+    Rct(-8,0,22,6); ctx.fillStyle='#efe6c8'; T(14,7,26,2,14,0); // foot + sickle claw
+    ctx.fillStyle=b; E(2,44,26,20);                       // body
+    ctx.beginPath(); ctx.moveTo(14,54); ctx.lineTo(42,72); ctx.lineTo(54,66); ctx.lineTo(20,48); ctx.closePath(); ctx.fill(); // neck
+    E(50,68,14,9);                                        // head
+    T(60,70,74,66,60,62);                                 // snout
+    ctx.fillStyle=fe; T(-4,52,-18,66,4,54);               // feather tuft
+    ctx.fillStyle='#000'; C(52,70,2.5); },
+
+  ankylosaurus(){ const b='#6a7a45';
+    ctx.fillStyle=b;
+    T(-18,30,-62,32,-62,24); Rct(-19,24,44,4);            // tail
+    C(-70,29,12);                                         // tail club
+    Rct(-20,0,12,20); Rct(-2,0,12,20); Rct(24,0,12,20); Rct(38,0,12,20); // legs
+    ctx.beginPath(); ctx.ellipse(6,40,46,26,0,Math.PI,2*Math.PI); ctx.fill(); Rct(-40,20,92,20); // low dome body
+    E(56,30,16,12);                                       // head
+    ctx.fillStyle='#8a9a5a'; for(let i=0;i<6;i++){ C(-30+i*15,52,5); } // armor bumps
+    ctx.fillStyle='#000'; C(62,32,2.5); },
+
+  spinosaurus(){ const b='#6a6a8a';
+    ctx.fillStyle=b;
+    T(-16,42,-98,26,-94,16); Rct(-17,32,80,4);            // tail
+    Rct(-6,0,14,42); Rct(-24,0,12,40);                    // legs
+    E(0,60,38,30);                                        // body
+    ctx.fillStyle='#8a6ab0';                              // big sail
+    ctx.beginPath(); ctx.moveTo(-30,62); ctx.quadraticCurveTo(2,138,36,68); ctx.lineTo(30,64); ctx.quadraticCurveTo(2,126,-26,60); ctx.closePath(); ctx.fill();
+    ctx.fillStyle=b;
+    ctx.beginPath(); ctx.moveTo(24,84); ctx.lineTo(46,104); ctx.lineTo(58,98); ctx.lineTo(32,74); ctx.closePath(); ctx.fill(); // neck
+    Rct(50,92,46,12); T(96,104,108,98,96,92);             // long croc snout
+    ctx.fillStyle='#fff'; for(let i=0;i<6;i++){ Rct(54+i*7,90,2,3); } // little teeth
+    ctx.fillStyle='#000'; C(58,102,2.5); },
+
+  tyrannosaurus(){ const b='#7f5a44', belly='#a07a5c';
+    ctx.fillStyle=b;
+    T(-18,44,-112,20,-106,10); Rct(-19,32,86,4);          // thick tail
+    Rct(-6,0,16,44);                                      // near leg
+    ctx.fillStyle='#6d4c3a'; Rct(-24,0,14,42);            // far leg
+    ctx.fillStyle=b; E(0,62,40,34);                       // big body
+    ctx.fillStyle=belly; E(8,50,26,20);                   // belly
+    ctx.fillStyle=b;
+    ctx.beginPath(); ctx.moveTo(22,82); ctx.lineTo(46,106); ctx.lineTo(62,98); ctx.lineTo(32,68); ctx.closePath(); ctx.fill(); // neck
+    E(72,100,26,17);                                      // head
+    ctx.beginPath(); ctx.moveTo(52,96); ctx.lineTo(98,96); ctx.lineTo(100,86); ctx.lineTo(54,84); ctx.closePath(); ctx.fill(); // upper jaw
+    ctx.beginPath(); ctx.moveTo(56,80); ctx.lineTo(96,82); ctx.lineTo(94,74); ctx.lineTo(58,72); ctx.closePath(); ctx.fill(); // lower jaw (open)
+    ctx.fillStyle='#fff';                                 // teeth
+    for(let i=0;i<7;i++){ const x=56+i*6; T(x,84,x+2.5,78,x+5,84); }
+    for(let i=0;i<6;i++){ const x=60+i*6; T(x,80,x+2.5,86,x+5,80); }
+    ctx.fillStyle=b; Rct(26,54,4,14); C(28,54,3);         // tiny arm
+    ctx.fillStyle='#000'; C(80,102,3); },
+
+  pteranodon(){ const b='#c0a0e0';
+    ctx.fillStyle=b;
+    ctx.beginPath(); ctx.moveTo(0,40); ctx.lineTo(-74,66); ctx.lineTo(-40,36); ctx.lineTo(0,34); ctx.closePath(); ctx.fill(); // left wing
+    ctx.beginPath(); ctx.moveTo(0,40); ctx.lineTo(82,62); ctx.lineTo(46,34); ctx.lineTo(0,34); ctx.closePath(); ctx.fill(); // right wing
+    E(2,40,13,11);                                        // body
+    E(16,46,12,8);                                        // head
+    T(24,48,48,46,24,42);                                 // long beak
+    T(10,52,-8,66,12,54);                                 // head crest
+    Rct(-4,26,4,10); Rct(4,26,4,10);                      // little legs
+    ctx.fillStyle='#000'; C(20,48,2.5); },
+};
+
+function drawDinoAt(key, sx, baselineY, scale){
+  ctx.save();
+  ctx.translate(sx, baselineY);
+  ctx.scale(scale, -scale);
+  DRAW[key]();
+  ctx.restore();
+}
+
+// ---------- the explorer (a friendly little green dino, not one of the real ones) ----------
+function drawPlayer(){
+  const sx = player.x - camX, feet = player.y;
+  ctx.save();
+  ctx.fillStyle='rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(sx+8, GROUND+4, 22, 6, 0,0,7); ctx.fill();
+  ctx.translate(sx, feet); ctx.scale(0.7,-0.7);
+  const b='#39c0a8';
+  ctx.fillStyle=b;
+  T(-10,30,-46,22,-44,16); Rct(-11,22,40,4);              // tail
+  const s = player.onGround ? Math.sin(player.run)*8 : 0;
+  Rct(-2,0,10,26+ (player.onGround? s*0.4:6)); Rct(12,0,10,26- (player.onGround? s*0.4:0)); // legs
+  E(6,40,26,22);                                          // body
+  E(30,58,17,15);                                         // head
+  T(44,60,58,56,44,50);                                   // snout
+  ctx.fillStyle='#2a9d8a'; T(6,60,-2,74,14,62);           // little back spike
+  ctx.fillStyle='#fff'; C(36,62,4); ctx.fillStyle='#000'; C(37,62,2); // eye
+  ctx.restore();
+}
+
+// ---------- scene ----------
+function drawScene(){
+  const age = AGES[currentAgeIdx()];
+  const g = ctx.createLinearGradient(0,0,0,GROUND);
+  g.addColorStop(0, age.sky); g.addColorStop(1, age.sky2);
+  ctx.fillStyle=g; ctx.fillRect(0,0,CW,GROUND);
+
+  ctx.fillStyle='rgba(255,245,200,0.85)'; C_screen(730,66,32);   // sun
+
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  for (const cl of clouds){
+    const x = cl.x - camX; if (x<-60||x>CW+60) continue;
+    ctx.beginPath(); ctx.arc(x,cl.y,cl.r,0,7); ctx.arc(x+cl.r*0.9,cl.y+4,cl.r*0.8,0,7); ctx.arc(x-cl.r*0.9,cl.y+4,cl.r*0.7,0,7); ctx.fill();
+  }
+
+  ctx.fillStyle=age.hill;
+  for (let i=-1;i<8;i++){ const hx=i*150 - ((camX*0.5)%150); ctx.beginPath(); ctx.arc(hx+75,GROUND,110,Math.PI,0); ctx.fill(); }
+
+  ctx.fillStyle=age.ground; ctx.fillRect(0,GROUND,CW,CH-GROUND);
+  ctx.fillStyle='rgba(0,0,0,0.22)'; ctx.fillRect(0,GROUND,CW,4);
+  ctx.strokeStyle='rgba(255,255,255,0.15)'; ctx.lineWidth=3;
+  for (let x=-40;x<CW;x+=40){ ctx.beginPath(); ctx.moveTo(x-groundOffset,GROUND+22); ctx.lineTo(x-groundOffset+16,GROUND+22); ctx.stroke(); }
+
+  // the real dinosaurs standing in the world
+  for (const d of DINOS){
+    const sx = d.worldX - camX;
+    if (sx < -140 || sx > CW+140) continue;
+    const dim = (!d.found && !(state==='card'&&cardDino===d)) ? 1 : 1; // always visible
+    drawDinoAt(d.key, sx, GROUND - d.lift, 0.72);
+    // little name tag under each (small)
+    ctx.fillStyle = d.found ? 'rgba(120,220,160,0.9)' : 'rgba(255,255,255,0.85)';
+    ctx.font='bold 12px sans-serif'; ctx.textAlign='center';
+    ctx.fillText((d.found?'✓ ':'')+d.name, sx, GROUND + 44);
+  }
+
+  drawPlayer();
+}
+function C_screen(x,y,r){ ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill(); }
+
+// ---------- the diary card ----------
+function wrap(text, x, y, maxW, lh){
+  const words = text.split(' '); let line='';
+  for (const w of words){
+    const test = line ? line+' '+w : w;
+    if (ctx.measureText(test).width > maxW && line){ ctx.fillText(line,x,y); line=w; y+=lh; }
+    else line=test;
+  }
+  if (line) ctx.fillText(line,x,y);
+  return y;
+}
+function drawCard(){
+  const d = cardDino, age = AGES[d.age];
+  ctx.fillStyle='rgba(0,0,0,0.45)'; ctx.fillRect(0,0,CW,CH);
+  const x=70,y=40,w=CW-140,h=CH-80;
+  // page
+  ctx.fillStyle='#fdf6e3'; roundRect(x,y,w,h,14); ctx.fill();
+  ctx.lineWidth=4; ctx.strokeStyle='#c9a24a'; roundRect(x+6,y+6,w-12,h-12,10); ctx.stroke();
+  // header ribbon
+  ctx.fillStyle=age.sky; roundRect(x+16,y+14,w-32,34,8); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='bold 18px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(`${age.name} PERIOD  ·  ${age.span}`, x+w/2, y+37);
+
+  // picture on the left
+  const picX = x+40, picBase = y+h-46, natH=NAT_H[d.key];
+  const scale = Math.min(1.6, (h-120)/natH);
+  drawDinoAt(d.key, picX+95, picBase, scale);
+
+  // text on the right
+  const tx = x + 250;
+  ctx.textAlign='left'; ctx.fillStyle='#2a2a2a';
+  ctx.font='bold 30px sans-serif'; ctx.fillText(d.name, tx, y+92);
+  ctx.font='italic 16px sans-serif'; ctx.fillStyle='#7a6a3a';
+  ctx.fillText('say it: '+d.say, tx, y+118);
+  ctx.font='bold 15px sans-serif'; ctx.fillStyle='#3a5a3a';
+  ctx.fillText('🕰️ Lived '+d.mya, tx, y+146);
+  ctx.font='17px sans-serif'; ctx.fillStyle='#2a2a2a';
+  wrap(d.fact, tx, y+178, w-260, 24);
+
+  // footer prompt
+  ctx.textAlign='center'; ctx.fillStyle='#b8860b'; ctx.font='bold 16px sans-serif';
+  const arrow = (Math.sin(pageArrow)>0)?'  ➡':'  ➡';
+  ctx.fillText('Press Space / A button to keep exploring'+arrow, x+w/2, y+h-18);
+  ctx.fillStyle='#7a6a3a'; ctx.font='13px sans-serif';
+  ctx.fillText(`Dinosaur ${foundCount+1} of ${DINOS.length}`, x+w/2, y+h-40);
+}
+
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+// ---------- title & completion ----------
+function drawTitle(){
+  ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,0,CW,CH);
+  ctx.fillStyle='#ffd166'; ctx.font='bold 40px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('🦖  DINO DIARY  🦕', CW/2, CH/2-30);
+  ctx.fillStyle='#fff'; ctx.font='18px sans-serif';
+  ctx.fillText('Walk through 200 million years and meet 12 real dinosaurs.', CW/2, CH/2+6);
+  ctx.fillText('Press START or Space to begin your walk!', CW/2, CH/2+34);
+}
+function drawDone(){
+  ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,CW,CH);
+  ctx.fillStyle='#ffd166'; ctx.font='bold 30px sans-serif'; ctx.textAlign='center';
+  ctx.fillText('🏆  Diary Complete!  You met all 12 dinosaurs!', CW/2, 46);
+  // grid of mini dinos
+  const cols=4, cw=CW/cols;
+  DINOS.forEach((d,i)=>{
+    const cx=(i%cols)*cw + cw/2, cy=90 + Math.floor(i/cols)*98;
+    drawDinoAt(d.key, cx, cy+40, 0.34);
+    ctx.fillStyle='#bfe'; ctx.font='bold 12px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(d.name, cx, cy+58);
+  });
+  ctx.fillStyle='#fff'; ctx.font='15px sans-serif';
+  ctx.fillText('Press Space to take the walk again!', CW/2, CH-12);
+}
+
+// ---------- HUD + loop ----------
+function updateHUD(){
+  const age = AGES[currentAgeIdx()];
+  hudEl.textContent = `📖 Dinosaurs met: ${foundCount} / ${DINOS.length}    |    Now in the ${age.name}`;
+}
+function frame(){
+  update();
+  if (state==='done'){ drawDone(); }
+  else { drawScene(); if (state==='card') drawCard(); if (state==='ready') drawTitle(); }
+  updateHUD();
+  requestAnimationFrame(frame);
+}
+
+startBtn.onclick = ()=>{ if (state==='ready'||state==='done'){ if(state==='done') reset(); state='walk'; } };
+reset(); frame();
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    // Any face button or up turns the page / jumps. Nice and forgiving.
+    up:'ArrowUp', down:'ArrowDown', left:'ArrowLeft', right:'ArrowRight',
+    a:'Space', b:'Space', x:'Space', y:'ArrowUp', start:'Space'
+  }]
+});
+</script>
+</body>
+</html>

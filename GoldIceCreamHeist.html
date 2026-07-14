@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Gold Ice Cream Heist</title>
+<style>
+  body { margin:0; background:#1a1030; color:#fff; font-family:system-ui, sans-serif; display:flex; flex-direction:column; align-items:center; padding:10px; }
+  h1 { margin:6px; color:gold; text-shadow:2px 2px 0 #000; }
+  #status { font-size:18px; margin:6px; min-height:24px; }
+  #hud { margin:4px; font-size:16px; }
+  canvas { background:#2a1a4a; border:4px solid gold; image-rendering:pixelated; cursor:pointer; }
+  .row { margin:6px; }
+  button { background:gold; color:#1a1030; border:0; padding:8px 14px; font-weight:bold; font-size:15px; border-radius:6px; cursor:pointer; margin:0 4px; }
+  button:disabled { opacity:0.4; cursor:not-allowed; }
+  .trap-btn { background:#444; color:#fff; padding:6px 10px; }
+  .trap-btn.selected { background:gold; color:#1a1030; }
+  #legend { font-size:13px; color:#bbb; max-width:560px; text-align:center; }
+</style>
+</head>
+<body>
+<h1>🍦 Gold Ice Cream Heist 🍦</h1>
+<div id="hud"></div>
+<div id="status"></div>
+<div class="row" id="trapbar"></div>
+<canvas id="game" width="576" height="576"></canvas>
+<div class="row">
+  <button id="startBtn">Wake the Prisoner!</button>
+  <button id="resetBtn">New Night</button>
+</div>
+<div id="legend">
+  <b>Phase 1 (Police):</b> Click a trap type then click cells to place it. You have a budget.<br>
+  <b>Phase 2 (Prisoner):</b> Use arrow keys / WASD. Reach the gold ice cream 🍦. Police 👮 are sleeping but trip alarms wake them!
+</div>
+
+<script>
+const TILE = 36, COLS = 16, ROWS = 16;
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const hudEl = document.getElementById('hud');
+const trapbar = document.getElementById('trapbar');
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+
+// Tile types
+const EMPTY = 0, WALL = 1, ICE = 2, START = 3;
+// Trap types
+const TRAPS = {
+  spike:    { name:'Spikes',     cost:2, color:'#c33',  symbol:'▲', desc:'Instant catch', invisible:false },
+  alarm:    { name:'Alarm',      cost:1, color:'#fc0',  symbol:'!', desc:'Wakes police nearby', invisible:false },
+  glue:     { name:'Glue',       cost:1, color:'#6cf',  symbol:'≈', desc:'Slows you 3 turns', invisible:false },
+  cage:     { name:'Cage',       cost:3, color:'#999',  symbol:'#', desc:'Drops & blocks path', invisible:false },
+  cuffs:    { name:'Cuff Gun',   cost:4, color:'#a0f',  symbol:'⌘', desc:'INVISIBLE — shoots cuffs, you fall down. Game over.', invisible:true },
+  puncher:  { name:'Puncher',    cost:3, color:'#f80',  symbol:'✊', desc:'Fists from ceiling/floor/sides. Knocks you back 2 + stun 1', invisible:false },
+  wallspike:{ name:'Wall Spikes',cost:2, color:'#e44',  symbol:'◄', desc:'Spikes shoot from walls. Catch unless you have full health', invisible:false },
+  cornerspk:{ name:'Corner Jab', cost:3, color:'#fa3',  symbol:'✦', desc:'Spikes from corners hit diagonally — also hits next to it', invisible:false },
+  laser:    { name:'Laser Beam', cost:5, color:'#0ff',  symbol:'═', desc:'Beam fires across whole row+column. Crossing = caught', invisible:false }
+};
+
+let grid, traps, phase, budget, selectedTrap, prisoner, ice, alarmed, glueTurns, stunTurns, health, gameOver, won, copPositions, laserFlash;
+
+function buildHouse() {
+  // Multi-room building. 4 rooms with doorways.
+  const g = Array.from({length:ROWS}, ()=>Array(COLS).fill(EMPTY));
+  for (let x=0;x<COLS;x++){ g[0][x]=WALL; g[ROWS-1][x]=WALL; }
+  for (let y=0;y<ROWS;y++){ g[y][0]=WALL; g[y][COLS-1]=WALL; }
+  // Horizontal divider (row 7) with two doorways
+  for (let x=1;x<COLS-1;x++) g[7][x]=WALL;
+  g[7][3]=EMPTY; g[7][11]=EMPTY;
+  // Vertical divider in top half (col 8)
+  for (let y=1;y<7;y++) g[y][8]=WALL;
+  g[3][8]=EMPTY;
+  // Vertical divider in bottom half (col 7)
+  for (let y=8;y<ROWS-1;y++) g[y][7]=WALL;
+  g[12][7]=EMPTY;
+  // Small inner closet (top-right room) wraps ice cream
+  for (let x=12;x<COLS-1;x++) g[3][x]=WALL;
+  g[3][13]=EMPTY;
+  // Ice cream — top right room (vault)
+  g[1][COLS-2]=ICE;
+  // Start — bottom left
+  g[ROWS-2][1]=START;
+  return g;
+}
+
+function init() {
+  grid = buildHouse();
+  traps = {}; // "x,y" -> trapKey
+  phase = 'place';
+  budget = 22;
+  selectedTrap = 'spike';
+  prisoner = {x:1, y:ROWS-2};
+  ice = {x:COLS-2, y:1};
+  alarmed = false;
+  glueTurns = 0;
+  stunTurns = 0;
+  health = 2; // 2 hits before caught (wall spikes chip health)
+  gameOver = false;
+  won = false;
+  laserFlash = 0;
+  copPositions = [{x:2,y:2},{x:13,y:5},{x:4,y:10},{x:12,y:13}];
+  renderTrapbar();
+  updateHUD();
+  draw();
+  statusEl.textContent = "Police phase: place your traps! Budget left: " + budget;
+  startBtn.disabled = false;
+}
+
+function renderTrapbar(){
+  trapbar.innerHTML = '';
+  if (phase !== 'place') return;
+  for (const k in TRAPS){
+    const t = TRAPS[k];
+    const b = document.createElement('button');
+    b.className = 'trap-btn' + (selectedTrap===k?' selected':'');
+    b.textContent = `${t.symbol} ${t.name} (${t.cost})`;
+    b.title = t.desc;
+    b.onclick = ()=>{ selectedTrap=k; renderTrapbar(); };
+    trapbar.appendChild(b);
+  }
+}
+
+function updateHUD(){
+  if (phase==='place') hudEl.textContent = `🚓 Police Phase — Budget: ${budget}`;
+  else {
+    const hearts = '❤️'.repeat(Math.max(0,health));
+    let extra = '';
+    if (glueTurns>0) extra += ` glue:${glueTurns}`;
+    if (stunTurns>0) extra += ` stunned:${stunTurns}`;
+    hudEl.textContent = `🦹 Prisoner — ${hearts} ${alarmed?'🚨ALARMED':'😶sneaking'}${extra}`;
+  }
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  for (let y=0;y<ROWS;y++){
+    for (let x=0;x<COLS;x++){
+      const v = grid[y][x];
+      ctx.fillStyle = v===WALL? '#5a3a1a' : (v===ICE? '#3a2a5a' : '#2a1a4a');
+      ctx.fillRect(x*TILE, y*TILE, TILE, TILE);
+      ctx.strokeStyle = '#1a1030';
+      ctx.strokeRect(x*TILE, y*TILE, TILE, TILE);
+      if (v===WALL){
+        ctx.fillStyle='#7a5a3a';
+        ctx.fillRect(x*TILE+2,y*TILE+2,TILE-4,8);
+      }
+      if (v===START){
+        ctx.fillStyle='#0a4';
+        ctx.fillRect(x*TILE+4,y*TILE+4,TILE-8,TILE-8);
+      }
+    }
+  }
+  // Laser beams (always visible — fire across row+column from laser traps)
+  ctx.fillStyle = 'rgba(0,255,255,0.25)';
+  for (const key in traps){
+    if (traps[key] !== 'laser') continue;
+    const [lx,ly] = key.split(',').map(Number);
+    // beam along row until wall
+    for (let x=lx+1; x<COLS && grid[ly][x]!==WALL; x++) ctx.fillRect(x*TILE+TILE/2-3, ly*TILE+4, 6, TILE-8);
+    for (let x=lx-1; x>=0 && grid[ly][x]!==WALL; x--) ctx.fillRect(x*TILE+TILE/2-3, ly*TILE+4, 6, TILE-8);
+    for (let y=ly+1; y<ROWS && grid[y][lx]!==WALL; y++) ctx.fillRect(lx*TILE+4, y*TILE+TILE/2-3, TILE-8, 6);
+    for (let y=ly-1; y>=0 && grid[y][lx]!==WALL; y--) ctx.fillRect(lx*TILE+4, y*TILE+TILE/2-3, TILE-8, 6);
+  }
+  if (laserFlash>0){
+    ctx.fillStyle = 'rgba(255,0,0,0.4)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    laserFlash--;
+  }
+  // Traps
+  for (const key in traps){
+    const [x,y] = key.split(',').map(Number);
+    const t = TRAPS[traps[key]];
+    // Hide invisible traps during prisoner phase
+    if (phase==='play' && t.invisible) continue;
+    ctx.fillStyle = t.color;
+    ctx.beginPath();
+    ctx.arc(x*TILE+TILE/2, y*TILE+TILE/2, TILE/3, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle='#000';
+    ctx.font='bold 18px sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(t.symbol, x*TILE+TILE/2, y*TILE+TILE/2+1);
+  }
+  // Ice cream
+  ctx.font='28px sans-serif';
+  ctx.fillText('🍦', ice.x*TILE+TILE/2, ice.y*TILE+TILE/2+2);
+  // Cops
+  for (const c of copPositions){
+    ctx.fillText(alarmed?'👮':'💤', c.x*TILE+TILE/2, c.y*TILE+TILE/2+2);
+  }
+  // Prisoner
+  if (phase==='play'){
+    ctx.fillText('🦹', prisoner.x*TILE+TILE/2, prisoner.y*TILE+TILE/2+2);
+  }
+}
+
+canvas.addEventListener('click', e=>{
+  if (phase!=='place') return;
+  const r = canvas.getBoundingClientRect();
+  const x = Math.floor((e.clientX-r.left)/TILE);
+  const y = Math.floor((e.clientY-r.top)/TILE);
+  if (x<0||x>=COLS||y<0||y>=ROWS) return;
+  if (grid[y][x]===WALL || grid[y][x]===ICE || grid[y][x]===START) return;
+  const key = x+','+y;
+  if (traps[key]){
+    // remove, refund
+    budget += TRAPS[traps[key]].cost;
+    delete traps[key];
+  } else {
+    const cost = TRAPS[selectedTrap].cost;
+    if (budget < cost){ statusEl.textContent='Not enough budget for that trap!'; return; }
+    budget -= cost;
+    traps[key] = selectedTrap;
+  }
+  statusEl.textContent = `Placing traps... Budget: ${budget}. Click a placed trap to remove.`;
+  updateHUD(); draw();
+});
+
+startBtn.onclick = ()=>{
+  if (phase!=='place') return;
+  phase='play';
+  renderTrapbar();
+  updateHUD();
+  statusEl.textContent = 'Sneak to the gold ice cream! Arrow keys / WASD.';
+  draw();
+};
+
+resetBtn.onclick = init;
+
+function lose(msg){ gameOver=true; statusEl.textContent=msg; draw(); }
+
+function chebyshev(a,b){ return Math.max(Math.abs(a.x-b.x), Math.abs(a.y-b.y)); }
+
+function laserHitsPrisoner(){
+  // check every laser trap; if prisoner is on same row/col with no wall between
+  for (const key in traps){
+    if (traps[key]!=='laser') continue;
+    const [lx,ly] = key.split(',').map(Number);
+    if (lx===prisoner.x && ly===prisoner.y) return true;
+    if (ly===prisoner.y){
+      let blocked=false;
+      const [a,b] = [Math.min(lx,prisoner.x), Math.max(lx,prisoner.x)];
+      for (let x=a+1; x<b; x++) if (grid[ly][x]===WALL){ blocked=true; break; }
+      if (!blocked) return true;
+    }
+    if (lx===prisoner.x){
+      let blocked=false;
+      const [a,b] = [Math.min(ly,prisoner.y), Math.max(ly,prisoner.y)];
+      for (let y=a+1; y<b; y++) if (grid[y][lx]===WALL){ blocked=true; break; }
+      if (!blocked) return true;
+    }
+  }
+  return false;
+}
+
+function applyTrap(key){
+  const t = traps[key];
+  if (!t) return false;
+  if (t==='spike'){ lose('💥 Caught by spikes! The police got you.'); return true; }
+  if (t==='alarm'){ alarmed=true; statusEl.textContent='🚨 ALARM TRIPPED! Police are waking up!'; delete traps[key]; return false; }
+  if (t==='glue'){ glueTurns=3; statusEl.textContent='🟦 Stuck in glue for 3 turns!'; delete traps[key]; return false; }
+  if (t==='cuffs'){ lose('⌘ INVISIBLE CUFFS! Handcuffs snap your wrists AND legs — you fall down. CAUGHT!'); return true; }
+  if (t==='puncher'){
+    // knock back 2 in direction prisoner came from
+    statusEl.textContent='✊ PUNCHER! Fists from every wall! Knocked back & stunned.';
+    stunTurns = 1;
+    delete traps[key];
+    return false;
+  }
+  if (t==='wallspike'){
+    health--;
+    if (health<=0){ lose('◄ Wall spikes pinned you! Police got you.'); return true; }
+    statusEl.textContent=`◄ Wall spikes grazed you! ❤️ ${health} left.`;
+    delete traps[key];
+    return false;
+  }
+  return false;
+}
+
+document.addEventListener('keydown', e=>{
+  if (phase!=='play' || gameOver) return;
+  let dx=0, dy=0;
+  if (e.key==='ArrowUp'||e.key==='w') dy=-1;
+  else if (e.key==='ArrowDown'||e.key==='s') dy=1;
+  else if (e.key==='ArrowLeft'||e.key==='a') dx=-1;
+  else if (e.key==='ArrowRight'||e.key==='d') dx=1;
+  else return;
+  e.preventDefault();
+
+  if (glueTurns>0){ glueTurns--; statusEl.textContent='Stuck in glue! ('+glueTurns+' left)'; updateHUD(); draw(); return; }
+  if (stunTurns>0){ stunTurns--; statusEl.textContent='Stunned! ('+stunTurns+' left)'; updateHUD(); draw(); return; }
+
+  const nx = prisoner.x+dx, ny=prisoner.y+dy;
+  if (nx<0||nx>=COLS||ny<0||ny>=ROWS) return;
+  if (grid[ny][nx]===WALL) return;
+  const key = nx+','+ny;
+  if (traps[key]==='cage') return;
+  prisoner.x=nx; prisoner.y=ny;
+
+  // Laser check on entering tile
+  if (laserHitsPrisoner()){
+    laserFlash = 1;
+    lose('═ LASER BEAM! Sliced — game over.');
+    return;
+  }
+
+  if (applyTrap(key)) return;
+
+  // Corner Jab: any adjacent (8-dir) corner trap also hits
+  for (const k2 in traps){
+    if (traps[k2]!=='cornerspk') continue;
+    const [cx,cy] = k2.split(',').map(Number);
+    if (chebyshev({x:cx,y:cy}, prisoner)===1 || (cx===prisoner.x&&cy===prisoner.y)){
+      health--;
+      if (health<=0){ lose('✦ Corner spikes skewered you!'); return; }
+      statusEl.textContent=`✦ Corner spikes nicked you! ❤️ ${health} left.`;
+      delete traps[k2];
+      break;
+    }
+  }
+
+  // Puncher knockback: if we just stepped onto a puncher, also shove back 2
+  // (handled in applyTrap setting stunTurns; nothing more to do here)
+
+  if (prisoner.x===ice.x && prisoner.y===ice.y){
+    won=true; gameOver=true;
+    statusEl.textContent='🏆 YOU GOT THE GOLD ICE CREAM! 🍦✨';
+    draw(); return;
+  }
+
+  if (alarmed){
+    for (const c of copPositions){
+      const ddx = Math.sign(prisoner.x-c.x);
+      const ddy = Math.sign(prisoner.y-c.y);
+      if (ddx!==0 && grid[c.y][c.x+ddx]!==WALL) c.x+=ddx;
+      else if (ddy!==0 && grid[c.y+ddy][c.x]!==WALL) c.y+=ddy;
+      if (c.x===prisoner.x && c.y===prisoner.y){
+        lose('👮 The police caught you! No ice cream tonight.');
+        return;
+      }
+    }
+  }
+  updateHUD(); draw();
+});
+
+init();
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+    a: 'Space', b: 'Enter', start: 'Enter'
+  }]
+});
+</script>
+</body>
+</html>

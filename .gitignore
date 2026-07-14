@@ -1,0 +1,7 @@
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+*.log
+
+# Local Claude config (keep out of the public repo)
+.claude/

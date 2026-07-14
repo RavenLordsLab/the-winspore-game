@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Candyland Blaze</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #ffd9ec;
+    font-family: "Comic Sans MS", "Trebuchet MS", sans-serif;
+    user-select: none;
+  }
+  #wrap {
+    position: relative;
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    background: linear-gradient(#bff0ff 0%, #ffe0f3 60%, #ffc6e3 100%);
+    image-rendering: pixelated;
+    box-shadow: 0 0 30px rgba(0,0,0,0.2);
+  }
+  #hud {
+    position: absolute; top: 10px; left: 10px;
+    color: #4b1d3f;
+    font-size: 22px;
+    font-weight: bold;
+    text-shadow: 2px 2px 0 #fff;
+    pointer-events: none;
+  }
+  #help {
+    position: absolute; bottom: 10px; left: 10px;
+    color: #4b1d3f; font-size: 14px;
+    background: rgba(255,255,255,0.6);
+    padding: 6px 10px; border-radius: 8px;
+  }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column;
+    background: rgba(255, 217, 236, 0.85);
+    color: #4b1d3f;
+    text-align: center;
+  }
+  #overlay h1 { font-size: 48px; margin: 0 0 10px; text-shadow: 3px 3px 0 #fff; }
+  #overlay p { font-size: 20px; margin: 6px 0; }
+  #overlay button {
+    margin-top: 18px;
+    font-size: 22px; padding: 10px 24px;
+    border: 0; border-radius: 12px;
+    background: #ff5aa0; color: white; cursor: pointer;
+    box-shadow: 0 4px 0 #b03a72;
+  }
+  #overlay button:active { transform: translateY(2px); box-shadow: 0 2px 0 #b03a72; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="960" height="600"></canvas>
+  <div id="hud">
+    <div>Score: <span id="score">0</span></div>
+    <div>Speed: <span id="speed">0</span></div>
+  </div>
+  <div id="help">Arrow keys / WASD to drive. Eat cake grass, dodge chocolate trees, grab marshmallow clouds!</div>
+  <div id="overlay">
+    <h1>🎂 Candyland Blaze 🚙</h1>
+    <p>You are Blaze, the monster truck.</p>
+    <p>The grass is <b>cake</b>. The clouds are <b>marshmallows</b>. The trees are <b>chocolate</b>.</p>
+    <p>Drive through cake. Eat marshmallows. Don't crash into chocolate!</p>
+    <button id="startBtn">Start!</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  const scoreEl = document.getElementById('score');
+  const speedEl = document.getElementById('speed');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+
+  const keys = {};
+  addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if ([' ','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+  });
+  addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+  // World scrolls downward toward the truck (truck appears to drive forward/up)
+  let world = {
+    scroll: 0,        // distance "traveled"
+    speed: 0,         // forward speed
+    score: 0,
+    running: false,
+    gameOver: false,
+    truck: { x: W/2, y: H - 120, w: 80, h: 110, vx: 0, tilt: 0 },
+    trees: [],        // chocolate trees (obstacles)
+    marshmallows: [], // clouds (pickups)
+    sprinkles: [],    // particles
+    spawnTimer: 0,
+    cloudTimer: 0,
+    t: 0
+  };
+
+  function reset() {
+    world.scroll = 0;
+    world.speed = 3;
+    world.score = 0;
+    world.running = true;
+    world.gameOver = false;
+    world.truck.x = W/2; world.truck.vx = 0; world.truck.tilt = 0;
+    world.trees.length = 0;
+    world.marshmallows.length = 0;
+    world.sprinkles.length = 0;
+    world.spawnTimer = 0;
+    world.cloudTimer = 0;
+  }
+
+  startBtn.addEventListener('click', () => {
+    overlay.classList.add('hidden');
+    reset();
+  });
+
+  function spawnTree() {
+    const x = 80 + Math.random() * (W - 160);
+    const size = 50 + Math.random() * 30;
+    world.trees.push({ x, y: -size, size, wobble: Math.random()*Math.PI*2 });
+  }
+  function spawnMarshmallow() {
+    const x = 60 + Math.random() * (W - 120);
+    const r = 28 + Math.random() * 14;
+    world.marshmallows.push({ x, y: -r, r, drift: (Math.random()-0.5)*0.6 });
+  }
+
+  function emitSprinkles(x, y, n, colors) {
+    for (let i = 0; i < n; i++) {
+      world.sprinkles.push({
+        x, y,
+        vx: (Math.random()-0.5)*4,
+        vy: (Math.random()-0.5)*4 - 1,
+        life: 30 + Math.random()*30,
+        color: colors[(Math.random()*colors.length)|0],
+        size: 2 + Math.random()*3
+      });
+    }
+  }
+
+  function update() {
+    if (!world.running) return;
+    world.t++;
+
+    // Steering
+    const t = world.truck;
+    const accel = 0.6, friction = 0.85, maxVx = 7;
+    if (keys['arrowleft'] || keys['a']) t.vx -= accel;
+    if (keys['arrowright'] || keys['d']) t.vx += accel;
+    t.vx *= friction;
+    if (t.vx > maxVx) t.vx = maxVx;
+    if (t.vx < -maxVx) t.vx = -maxVx;
+    t.x += t.vx;
+    t.tilt = t.vx * 0.04;
+    if (t.x < 50) { t.x = 50; t.vx = 0; }
+    if (t.x > W - 50) { t.x = W - 50; t.vx = 0; }
+
+    // Speed
+    if (keys['arrowup'] || keys['w']) world.speed = Math.min(world.speed + 0.05, 9);
+    else if (keys['arrowdown'] || keys['s']) world.speed = Math.max(world.speed - 0.1, 1.5);
+    else world.speed *= 0.995;
+
+    world.scroll += world.speed;
+    world.score += world.speed * 0.05;
+
+    // Spawn obstacles & pickups
+    world.spawnTimer -= world.speed;
+    if (world.spawnTimer <= 0) {
+      spawnTree();
+      world.spawnTimer = 60 + Math.random()*40;
+    }
+    world.cloudTimer -= world.speed;
+    if (world.cloudTimer <= 0) {
+      spawnMarshmallow();
+      world.cloudTimer = 90 + Math.random()*60;
+    }
+
+    // Move trees
+    for (const tr of world.trees) {
+      tr.y += world.speed;
+      tr.wobble += 0.05;
+    }
+    // Move marshmallows
+    for (const m of world.marshmallows) {
+      m.y += world.speed * 0.9;
+      m.x += m.drift;
+    }
+
+    // Collisions
+    const tx = t.x, ty = t.y;
+    for (let i = world.trees.length - 1; i >= 0; i--) {
+      const tr = world.trees[i];
+      const dx = tr.x - tx, dy = (tr.y + tr.size*0.5) - ty;
+      const rr = tr.size*0.55 + t.w*0.35;
+      if (dx*dx + dy*dy < rr*rr) {
+        // Crash!
+        emitSprinkles(tr.x, tr.y, 40, ['#4a2a1a','#7b4a2a','#fff','#ffb6d5']);
+        world.trees.splice(i,1);
+        world.running = false;
+        world.gameOver = true;
+        setTimeout(showGameOver, 600);
+        return;
+      }
+      if (tr.y > H + 80) world.trees.splice(i, 1);
+    }
+    for (let i = world.marshmallows.length - 1; i >= 0; i--) {
+      const m = world.marshmallows[i];
+      const dx = m.x - tx, dy = m.y - (ty - 10);
+      const rr = m.r + t.w*0.3;
+      if (dx*dx + dy*dy < rr*rr) {
+        world.score += 25;
+        emitSprinkles(m.x, m.y, 20, ['#fff','#ffe0f3','#ffb6d5','#ffd966']);
+        world.marshmallows.splice(i, 1);
+        continue;
+      }
+      if (m.y > H + 60) world.marshmallows.splice(i, 1);
+    }
+
+    // Sprinkles
+    for (let i = world.sprinkles.length - 1; i >= 0; i--) {
+      const s = world.sprinkles[i];
+      s.x += s.vx; s.y += s.vy;
+      s.vy += 0.15;
+      s.life--;
+      if (s.life <= 0) world.sprinkles.splice(i, 1);
+    }
+
+    // HUD
+    scoreEl.textContent = Math.floor(world.score);
+    speedEl.textContent = world.speed.toFixed(1);
+  }
+
+  function showGameOver() {
+    overlay.classList.remove('hidden');
+    overlay.querySelector('h1').textContent = '💥 Chocolate Crash! 💥';
+    overlay.querySelectorAll('p').forEach((p,i) => p.remove());
+    const p = document.createElement('p');
+    p.innerHTML = `You scored <b>${Math.floor(world.score)}</b> cake points!`;
+    overlay.insertBefore(p, startBtn);
+    startBtn.textContent = 'Drive Again!';
+  }
+
+  // ===== Drawing =====
+  function drawCakeGround() {
+    // Pink/white frosting layered "cake" ground with scrolling stripes
+    const stripeH = 60;
+    const offset = world.scroll % (stripeH * 2);
+    for (let y = -stripeH*2 - offset; y < H; y += stripeH) {
+      const band = Math.floor((y + offset) / stripeH);
+      ctx.fillStyle = (band % 2 === 0) ? '#ffd1e8' : '#ffe9f3';
+      ctx.fillRect(0, y, W, stripeH);
+      // sprinkles
+      ctx.save();
+      const seed = band * 999;
+      for (let i = 0; i < 20; i++) {
+        const sx = ((Math.sin(seed + i*13.7) * 0.5 + 0.5) * W);
+        const sy = y + ((Math.cos(seed + i*7.3) * 0.5 + 0.5) * stripeH);
+        ctx.fillStyle = ['#ff5aa0','#ffd966','#7ed957','#5cc8ff','#b266ff'][(i+band)%5];
+        ctx.fillRect(sx, sy, 6, 2);
+      }
+      ctx.restore();
+    }
+
+    // Road-ish lighter cake path down the middle to give a sense of motion
+    const pathW = 360;
+    const grad = ctx.createLinearGradient(0,0,0,H);
+    grad.addColorStop(0,'rgba(255,255,255,0.0)');
+    grad.addColorStop(0.5,'rgba(255,255,255,0.25)');
+    grad.addColorStop(1,'rgba(255,255,255,0.0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(W/2 - pathW/2, 0, pathW, H);
+
+    // Frosting drips along edges
+    ctx.fillStyle = '#fff7fb';
+    for (let i = 0; i < 12; i++) {
+      const yy = (i * 70 + world.scroll * 0.5) % (H + 80) - 40;
+      ctx.beginPath();
+      ctx.arc(20 + (i%2)*10, yy, 18, 0, Math.PI*2);
+      ctx.arc(W - 20 - (i%2)*10, yy + 35, 18, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  function drawChocolateTree(tr) {
+    const { x, y, size, wobble } = tr;
+    // trunk
+    ctx.fillStyle = '#4a2a1a';
+    ctx.fillRect(x - size*0.12, y + size*0.4, size*0.24, size*0.5);
+    // chocolate "leaves" - stacked dark brown blobs
+    const sway = Math.sin(wobble) * 2;
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = ['#5b2f17','#7b4a2a','#9a5a33'][i];
+      ctx.beginPath();
+      ctx.arc(x + sway, y + size*0.2 - i*size*0.18, size*(0.6 - i*0.12), 0, Math.PI*2);
+      ctx.fill();
+    }
+    // chocolate shine
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(x - size*0.2 + sway, y - size*0.05, size*0.12, size*0.25, -0.5, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  function drawMarshmallow(m) {
+    // squishy white pill-shape with pink stripe
+    ctx.save();
+    ctx.translate(m.x, m.y);
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.08)';
+    ctx.beginPath();
+    ctx.ellipse(4, m.r*0.8, m.r*1.1, m.r*0.4, 0, 0, Math.PI*2);
+    ctx.fill();
+    // body
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, m.r*1.3, m.r, 0, 0, Math.PI*2);
+    ctx.fill();
+    // pink stripe
+    ctx.fillStyle = '#ffb6d5';
+    ctx.fillRect(-m.r*1.1, -m.r*0.2, m.r*2.2, m.r*0.4);
+    // outline puffs
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(-m.r*0.7, -m.r*0.2, m.r*0.45, 0, Math.PI*2);
+    ctx.arc( m.r*0.7, -m.r*0.2, m.r*0.45, 0, Math.PI*2);
+    ctx.fill();
+    // face
+    ctx.fillStyle = '#4b1d3f';
+    ctx.beginPath();
+    ctx.arc(-6, -2, 2.5, 0, Math.PI*2);
+    ctx.arc( 6, -2, 2.5, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = '#4b1d3f'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 4, 5, 0, Math.PI); ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawTruck() {
+    const t = world.truck;
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(t.tilt);
+
+    // wheels (big monster truck tires)
+    const wheelR = 26;
+    const bounce = Math.sin(world.t * 0.4) * 1.5;
+    for (const wx of [-32, 32]) {
+      for (const wy of [-30 + bounce, 30 + bounce]) {
+        ctx.fillStyle = '#1a1a1a';
+        ctx.beginPath(); ctx.arc(wx, wy, wheelR, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#444';
+        ctx.beginPath(); ctx.arc(wx, wy, wheelR*0.55, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#ffcc00';
+        ctx.beginPath(); ctx.arc(wx, wy, wheelR*0.25, 0, Math.PI*2); ctx.fill();
+      }
+    }
+
+    // body - bright blue Blaze-style
+    ctx.fillStyle = '#ff3b1f';
+    ctx.fillRect(-34, -36, 68, 14);   // top cab back
+    ctx.fillStyle = '#1a8cff';
+    // main chassis
+    ctx.beginPath();
+    ctx.moveTo(-38, -22);
+    ctx.lineTo(38, -22);
+    ctx.lineTo(44, 0);
+    ctx.lineTo(44, 28);
+    ctx.lineTo(-44, 28);
+    ctx.lineTo(-44, 0);
+    ctx.closePath();
+    ctx.fill();
+
+    // flame stripe
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath();
+    ctx.moveTo(-44, 6);
+    ctx.lineTo(-20, 2);
+    ctx.lineTo(-10, 10);
+    ctx.lineTo(10, 2);
+    ctx.lineTo(20, 10);
+    ctx.lineTo(44, 6);
+    ctx.lineTo(44, 16);
+    ctx.lineTo(-44, 16);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#ff7a1a';
+    ctx.beginPath();
+    ctx.moveTo(-44, 10);
+    ctx.lineTo(-15, 8);
+    ctx.lineTo(-5, 14);
+    ctx.lineTo(15, 8);
+    ctx.lineTo(25, 14);
+    ctx.lineTo(44, 10);
+    ctx.lineTo(44, 16);
+    ctx.lineTo(-44, 16);
+    ctx.closePath();
+    ctx.fill();
+
+    // windshield
+    ctx.fillStyle = '#bff0ff';
+    ctx.fillRect(-26, -20, 52, 14);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillRect(-22, -18, 12, 8);
+
+    // headlights (front = top of sprite since we move forward)
+    ctx.fillStyle = '#fff7a8';
+    ctx.beginPath(); ctx.arc(-28, -22, 4, 0, Math.PI*2); ctx.arc(28, -22, 4, 0, Math.PI*2); ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawSprinkles() {
+    for (const s of world.sprinkles) {
+      ctx.fillStyle = s.color;
+      ctx.fillRect(s.x, s.y, s.size, s.size);
+    }
+  }
+
+  function drawClouds() {
+    // soft marshmallow-cloud hints in the distance at the top
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    for (let i = 0; i < 4; i++) {
+      const cx = ((i * 240 + world.scroll * 0.2) % (W + 200)) - 100;
+      const cy = 30 + (i%2)*20;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 30, 0, Math.PI*2);
+      ctx.arc(cx+30, cy+5, 24, 0, Math.PI*2);
+      ctx.arc(cx-28, cy+8, 22, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+    drawCakeGround();
+    drawClouds();
+    // depth-sort: trees before truck if behind, marshmallows above
+    for (const tr of world.trees) drawChocolateTree(tr);
+    drawTruck();
+    for (const m of world.marshmallows) drawMarshmallow(m);
+    drawSprinkles();
+  }
+
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+  loop();
+})();
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+    a: 'Space', b: 'Space', start: 'Space'
+  }]
+});
+</script>
+</body>
+</html>

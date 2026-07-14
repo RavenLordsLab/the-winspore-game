@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0f1220">
+<title>Game Arcade</title>
+<style>
+  :root {
+    --bg: #0f1220;
+    --card: #1b2033;
+    --card-hover: #262d47;
+    --text: #eef1f8;
+    --muted: #9aa3c0;
+    --accent: #6c8cff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    text-align: center;
+    padding: 28px 16px 8px;
+  }
+  header h1 { margin: 0; font-size: 1.9rem; letter-spacing: 0.5px; }
+  header p { margin: 8px 0 0; color: var(--muted); font-size: 0.95rem; }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 16px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 14px;
+  }
+  a.card {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-height: 96px;
+    padding: 18px 14px;
+    background: var(--card);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 16px;
+    color: var(--text);
+    text-decoration: none;
+    font-weight: 600;
+    text-align: center;
+    transition: transform 0.12s ease, background 0.12s ease;
+  }
+  a.card:active { transform: scale(0.97); background: var(--card-hover); }
+  a.card .emoji { font-size: 1.8rem; margin-bottom: 8px; }
+  footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 20px 16px 40px; }
+  @media (hover: hover) {
+    a.card:hover { background: var(--card-hover); transform: translateY(-2px); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎮 Game Arcade</h1>
+  <p>Tap a game to play</p>
+</header>
+<main id="grid"></main>
+<footer>Works best in landscape · keyboard/gamepad games may need a physical controller</footer>
+<script>
+  const games = [
+    { file: "AI.html", name: "AI", emoji: "🤖" },
+    { file: "CandylandBlaze.html", name: "Candyland Blaze", emoji: "🍬" },
+    { file: "CarnivoreCircuit.html", name: "Carnivore Circuit", emoji: "🦖" },
+    { file: "DinoDash.html", name: "Dino Dash", emoji: "🦕" },
+    { file: "EasterBunny.html", name: "Easter Bunny", emoji: "🐰" },
+    { file: "ForestMiner.html", name: "Forest Miner", emoji: "⛏️" },
+    { file: "GoldIceCreamHeist.html", name: "Gold Ice Cream Heist", emoji: "🍦" },
+    { file: "GroceryCatcher.html", name: "Grocery Catcher", emoji: "🛒" },
+    { file: "HiddenObjects.html", name: "Hidden Objects", emoji: "🔍" },
+    { file: "HotMazeGauntlet.html", name: "Hot Maze Gauntlet", emoji: "🔥" },
+    { file: "Jeffed.html", name: "Jeffed", emoji: "😆" },
+    { file: "MineCraft.html", name: "MineCraft", emoji: "🟫" },
+    { file: "MonsterClash.html", name: "Monster Clash", emoji: "👾" },
+    { file: "PowerFighters.html", name: "Power Fighters", emoji: "🥊" },
+    { file: "RainbowFix.html", name: "Rainbow Fix", emoji: "🌈" },
+    { file: "RoadRacer.html", name: "Road Racer", emoji: "🏎️" },
+    { file: "demolition_derby.html", name: "Demolition Derby", emoji: "💥" }
+  ];
+  const grid = document.getElementById("grid");
+  for (const g of games) {
+    const a = document.createElement("a");
+    a.className = "card";
+    a.href = g.file;
+    a.innerHTML = '<span class="emoji">' + g.emoji + '</span>' + g.name;
+    grid.appendChild(a);
+  }
+</script>
+</body>
+</html>

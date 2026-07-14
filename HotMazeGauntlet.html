@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hot Maze: Golden Ice Cream Gauntlet</title>
+<style>
+  body { margin:0; background:#160a04; color:#fff; font-family:system-ui, sans-serif;
+         display:flex; flex-direction:column; align-items:center; padding:8px; user-select:none; }
+  h1 { margin:6px; color:gold; text-shadow:2px 2px 0 #000, 0 0 12px #f60; font-size:24px; text-align:center; }
+  #hud { font-size:18px; margin:4px; min-height:24px; letter-spacing:1px; }
+  #status { font-size:15px; margin:2px; min-height:20px; color:#ffd; text-align:center; }
+  canvas { background:#0a0502; border:4px solid gold; image-rendering:pixelated; box-shadow:0 0 24px #f30; }
+  .row { margin:6px; }
+  button { background:gold; color:#160a04; border:0; padding:9px 16px; font-weight:bold;
+           font-size:15px; border-radius:6px; cursor:pointer; margin:0 4px; }
+  #legend { font-size:12px; color:#caa; max-width:620px; text-align:center; margin-top:4px; line-height:1.5; }
+</style>
+</head>
+<body>
+<h1>🔥 HOT MAZE: Golden Ice Cream Gauntlet 🍦</h1>
+<div id="hud"></div>
+<div id="status"></div>
+<canvas id="game" width="640" height="760"></canvas>
+<div class="row">
+  <button id="startBtn">START (or press Space)</button>
+</div>
+<div id="legend">
+  Use <b>Arrow keys / WASD / the controller stick</b> to climb from the bottom to the top.<br>
+  🧟 zombies → 🌋 lava pit → ▲ flipping spikes → 🚚 monster trucks → 💪 grab-arms → 🔨 hat-crushers → twisty maze → 🍦 GOLD ICE CREAM!<br>
+  Secret: find the 🚽 in the maze and pull it off for a shortcut. You have 5 ❤️ — run out and the police take you to jail!
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const hudEl = document.getElementById('hud');
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+
+const W = canvas.width, H = canvas.height;
+const LEFT = 24, RIGHT = W - 24, TOP = 8, BOTTOM = H - 8;
+const INNER_W = RIGHT - LEFT;
+
+// Player
+const PR = 13, SPEED = 3.0;
+let player, hearts, T, state, invuln, safe, toiletUsed, won;
+
+// Band boundaries (y pixels, top -> bottom)
+const BANDS = {
+  goalTop:   10,
+  mazeTop:   70,
+  crushTop:  300,
+  armsTop:   395,
+  truckTop:  485,
+  spikeTop:  570,
+  lavaTop:   655,
+  startTop:  708,
+};
+
+// ---- Maze walls (static rects the player cannot pass) ----
+const WT = 16; // wall thickness
+const walls = [
+  // outer border
+  {x:0, y:0, w:W, h:TOP},
+  {x:0, y:BOTTOM, w:W, h:H-BOTTOM},
+  {x:0, y:0, w:LEFT, h:H},
+  {x:RIGHT, y:0, w:W-RIGHT, h:H},
+  // S-maze inside the maze band (70 -> 300)
+  {x:LEFT, y:130, w:430, h:WT},                 // shelf from left, gap on right
+  {x:200, y:195, w:RIGHT-200, h:WT},            // shelf from right, gap on left
+  {x:LEFT, y:260, w:430, h:WT},                 // shelf from left, gap on right
+  // little pocket walls around the secret toilet (top-right of maze)
+  {x:540, y:78, w:WT, h:52},
+];
+
+const toilet = {x:572, y:100, r:18};   // secret escape in the top-right pocket
+const goal   = {x:W/2, y:36};          // golden ice cream
+
+// ---- Hazards ----
+let trucks, arms, crushers, spikes, lavaStones, zombies, spikyBoys;
+
+function reset(){
+  T = 0; hearts = 5; invuln = 0; toiletUsed = false; won = false;
+  player = {x:W/2, y:H-30};
+  safe = {x:player.x, y:player.y};
+
+  // Spike flippers: 4 columns across the spike band, offset phases ("flip every second")
+  spikes = [];
+  const colW = INNER_W/4;
+  for (let i=0;i<4;i++){
+    spikes.push({x:LEFT+i*colW, y:BANDS.spikeTop+4, w:colW-6, h:(BANDS.lavaTop-BANDS.spikeTop)-8, off:i*30});
+  }
+
+  // Lava stepping stones (safe spots inside the lava band)
+  lavaStones = [
+    {x:LEFT+30,  y:BANDS.lavaTop+6, w:70, h:(BANDS.startTop-BANDS.lavaTop)-12},
+    {x:W/2-35,   y:BANDS.lavaTop+6, w:70, h:(BANDS.startTop-BANDS.lavaTop)-12},
+    {x:RIGHT-100,y:BANDS.lavaTop+6, w:70, h:(BANDS.startTop-BANDS.lavaTop)-12},
+  ];
+
+  // Three monster trucks bouncing across the truck band
+  trucks = [
+    {x:60,  y:BANDS.truckTop+6,  w:90, h:26, vx: 2.6},
+    {x:400, y:BANDS.truckTop+34, w:90, h:26, vx:-3.2},
+    {x:200, y:BANDS.truckTop+62, w:90, h:26, vx: 2.0},
+  ];
+
+  // Grab-arms from the side walls
+  arms = [
+    {side:'L', y:BANDS.armsTop+18, off:0},
+    {side:'R', y:BANDS.armsTop+45, off:75},
+    {side:'L', y:BANDS.armsTop+72, off:40},
+  ];
+
+  // Hat-crushers (slam down from the top of the crush band)
+  crushers = [
+    {x:80,  off:0},
+    {x:270, off:60},
+    {x:450, off:120},
+  ];
+
+  // Two zombies guarding the skeleton start
+  zombies = [
+    {x:LEFT+60,  y:H-30},
+    {x:RIGHT-60, y:H-30},
+  ];
+
+  // Two spiky boys patrolling the maze corridors
+  spikyBoys = [
+    {x:300, y:100, lo:LEFT+20, hi:520, vx:1.8, r:12},
+    {x:400, y:228, lo:220,     hi:RIGHT-20, vx:-2.1, r:12},
+  ];
+}
+
+// ---------- geometry helpers ----------
+function circleRect(cx,cy,r, rx,ry,rw,rh){
+  const nx = Math.max(rx, Math.min(cx, rx+rw));
+  const ny = Math.max(ry, Math.min(cy, ry+rh));
+  const dx = cx-nx, dy = cy-ny;
+  return dx*dx+dy*dy < r*r;
+}
+function hitsWall(cx,cy){
+  for (const w of walls) if (circleRect(cx,cy,PR, w.x,w.y,w.w,w.h)) return true;
+  return false;
+}
+
+// ---------- input ----------
+const keys = {};
+addEventListener('keydown', e=>{
+  if ((e.key===' '||e.key==='Enter') && state!=='play'){ start(); e.preventDefault(); return; }
+  keys[e.key.toLowerCase()] = true;
+  if (['arrowup','arrowdown','arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault();
+});
+addEventListener('keyup', e=>{ keys[e.key.toLowerCase()] = false; });
+
+function axis(neg, pos){ return (keys[neg]?-1:0) + (keys[pos]?1:0); }
+
+// ---------- hazard state computed from time ----------
+function spikeUp(s){ return ((T + s.off) % 120) >= 60; }            // up half the time
+function armLen(a){
+  const p = (T + a.off) % 150;
+  if (p < 95) return 0;                 // retracted
+  if (p < 110) return (p-95)/15 * (INNER_W*0.62);  // extending (warning)
+  if (p < 138) return INNER_W*0.62;     // fully extended (deadly)
+  return (1-(p-138)/12) * (INNER_W*0.62);          // retracting
+}
+function crushY(c){
+  const p = (T + c.off) % 180;
+  const top = BANDS.crushTop;
+  const full = BANDS.armsTop - BANDS.crushTop - 6;
+  if (p < 110) return 14;               // raised
+  if (p < 124) return 14 + (p-110)/14 * (full-14); // slamming
+  if (p < 150) return full;             // slammed (deadly)
+  return full - (p-150)/30 * (full-14); // lifting
+}
+
+function die(msg){
+  hearts--;
+  invuln = 110;
+  player.x = safe.x; player.y = safe.y;
+  if (hearts <= 0){
+    state = 'lose';
+    statusEl.textContent = '🚔 The police caught you and threw you in JAIL! Press Space to try again.';
+  } else {
+    statusEl.textContent = msg + '  ❤️ ' + hearts + ' left.';
+  }
+}
+
+// ---------- main update ----------
+function update(){
+  if (state !== 'play') return;
+  T++;
+  if (invuln > 0) invuln--;
+
+  // move player (axis-separated wall collision)
+  const dx = axis('arrowleft','arrowright') || axis('a','d');
+  const dy = axis('arrowup','arrowdown')   || axis('w','s');
+  let nx = player.x + dx*SPEED;
+  if (!hitsWall(nx, player.y)) player.x = nx;
+  let ny = player.y + dy*SPEED;
+  if (!hitsWall(player.x, ny)) player.y = ny;
+  player.x = Math.max(LEFT+PR, Math.min(RIGHT-PR, player.x));
+  player.y = Math.max(TOP+PR,  Math.min(BOTTOM-PR, player.y));
+
+  // move trucks
+  for (const t of trucks){
+    t.x += t.vx;
+    if (t.x < LEFT){ t.x = LEFT; t.vx*=-1; }
+    if (t.x+t.w > RIGHT){ t.x = RIGHT-t.w; t.vx*=-1; }
+  }
+  // move spiky boys
+  for (const b of spikyBoys){
+    b.x += b.vx;
+    if (b.x < b.lo){ b.x=b.lo; b.vx*=-1; }
+    if (b.x > b.hi){ b.x=b.hi; b.vx*=-1; }
+  }
+  // zombies chase only near the start
+  if (player.y > BANDS.lavaTop){
+    for (const z of zombies){
+      const a = Math.atan2(player.y-z.y, player.x-z.x);
+      z.x += Math.cos(a)*1.1; z.y += Math.sin(a)*1.1;
+    }
+  } else {
+    for (const z of zombies){ z.x += (LEFT+ (z===zombies[0]?60:RIGHT-LEFT-60) - z.x)*0.02; }
+  }
+
+  checkDeath();
+  checkProgress();
+}
+
+function checkDeath(){
+  if (invuln > 0) return;
+  const px=player.x, py=player.y;
+
+  // lava: deadly inside the lava band unless on a stepping stone
+  if (py > BANDS.lavaTop && py < BANDS.startTop){
+    let onStone = false;
+    for (const s of lavaStones) if (circleRect(px,py,PR-3, s.x,s.y,s.w,s.h)) onStone = true;
+    if (!onStone){ die('🌋 You fell in the lava!'); return; }
+  }
+  // raised spikes
+  for (const s of spikes){
+    if (spikeUp(s) && circleRect(px,py,PR-2, s.x,s.y,s.w,s.h)){ die('▲ The spike floor flipped up and got you!'); return; }
+  }
+  // trucks
+  for (const t of trucks) if (circleRect(px,py,PR, t.x,t.y,t.w,t.h)){ die('🚚 A monster truck flattened you!'); return; }
+  // arms
+  for (const a of arms){
+    const len = armLen(a);
+    if (len < INNER_W*0.5) continue; // only deadly when well extended
+    if (a.side==='L' && circleRect(px,py,PR, LEFT, a.y, len, 18)){ die('💪 An arm grabbed you and ripped you back!'); return; }
+    if (a.side==='R' && circleRect(px,py,PR, RIGHT-len, a.y, len, 18)){ die('💪 An arm grabbed you and ripped you back!'); return; }
+  }
+  // crushers
+  for (const c of crushers){
+    const h = crushY(c);
+    if (h > (BANDS.armsTop-BANDS.crushTop-6)*0.7 && circleRect(px,py,PR, c.x, BANDS.crushTop, 110, h)){
+      die('🔨 HAT CRUSH! A plate slammed you flat!'); return;
+    }
+  }
+  // zombies & spiky boys
+  for (const z of zombies) if (Math.hypot(px-z.x,py-z.y) < PR+13){ die('🧟 A zombie grabbed you!'); return; }
+  for (const b of spikyBoys) if (Math.hypot(px-b.x,py-b.y) < PR+b.r){ die('⚡ A spiky boy zapped you!'); return; }
+}
+
+function checkProgress(){
+  const px=player.x, py=player.y;
+  // record a safe respawn spot whenever clearly out of harm
+  const inHazardBand = (py > BANDS.crushTop && py < BANDS.startTop);
+  if (!inHazardBand && invuln===0){ safe.x = px; safe.y = py; }
+
+  // secret toilet shortcut
+  if (!toiletUsed && Math.hypot(px-toilet.x,py-toilet.y) < PR+toilet.r){
+    toiletUsed = true;
+    player.x = goal.x; player.y = BANDS.mazeTop + 12;
+    safe.x = player.x; safe.y = player.y;
+    invuln = 60;
+    statusEl.textContent = '🚽 SECRET! You pulled the toilet off and warped near the ice cream!';
+  }
+
+  // win
+  if (Math.hypot(px-goal.x,py-goal.y) < PR+18){
+    state='win'; won=true;
+    statusEl.textContent = '🏆 YOU GOT THE GOLDEN ICE CREAM! YOU WIN! 🍦✨  Press Space to play again.';
+  }
+}
+
+// ---------- draw ----------
+function band(y0,y1,col){ ctx.fillStyle=col; ctx.fillRect(LEFT,y0,INNER_W,y1-y0); }
+function emoji(ch,x,y,size){ ctx.font=size+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(ch,x,y); }
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  // band backgrounds
+  band(BANDS.goalTop,  BANDS.mazeTop,  '#2a1d52');   // goal
+  band(BANDS.mazeTop,  BANDS.crushTop, '#1c2a14');   // maze
+  band(BANDS.crushTop, BANDS.armsTop,  '#3a2410');   // crushers
+  band(BANDS.armsTop,  BANDS.truckTop, '#2a1430');   // arms
+  band(BANDS.truckTop, BANDS.spikeTop, '#26262e');   // trucks
+  band(BANDS.spikeTop, BANDS.lavaTop,  '#2a1010');   // spikes
+  band(BANDS.lavaTop,  BANDS.startTop, '#3a0a02');   // lava
+  band(BANDS.startTop, BOTTOM,         '#101820');   // start
+
+  // lava glow + stones
+  for (let i=0;i<INNER_W;i+=24) emoji('🔥', LEFT+12+i, (BANDS.lavaTop+BANDS.startTop)/2, 20);
+  ctx.fillStyle='#6a5a3a';
+  for (const s of lavaStones){ ctx.fillRect(s.x,s.y,s.w,s.h); }
+
+  // spikes
+  for (const s of spikes){
+    const up = spikeUp(s);
+    ctx.fillStyle = up ? '#aa2222' : '#552222';
+    ctx.fillRect(s.x,s.y,s.w,s.h);
+    if (up){
+      ctx.fillStyle='#ff5555';
+      const n=Math.floor(s.w/16);
+      for (let i=0;i<n;i++){
+        const bx=s.x+8+i*16;
+        ctx.beginPath();
+        ctx.moveTo(bx, s.y+s.h-4); ctx.lineTo(bx+6, s.y+8); ctx.lineTo(bx+12, s.y+s.h-4);
+        ctx.fill();
+      }
+    } else {
+      ctx.strokeStyle='#774'; ctx.strokeRect(s.x+2,s.y+2,s.w-4,s.h-4);
+    }
+  }
+
+  // trucks
+  for (const t of trucks){
+    ctx.fillStyle='#c0392b'; ctx.fillRect(t.x,t.y,t.w,t.h);
+    ctx.fillStyle='#111';
+    ctx.beginPath(); ctx.arc(t.x+16,t.y+t.h,8,0,7); ctx.arc(t.x+t.w-16,t.y+t.h,8,0,7); ctx.fill();
+    emoji('🚚', t.x+t.w/2, t.y+t.h/2, 20);
+  }
+
+  // arms
+  for (const a of arms){
+    const len = armLen(a);
+    if (len<=1) continue;
+    ctx.fillStyle = len < INNER_W*0.5 ? '#a76' : '#e84';
+    if (a.side==='L') ctx.fillRect(LEFT, a.y, len, 18);
+    else ctx.fillRect(RIGHT-len, a.y, len, 18);
+    emoji('💪', a.side==='L'? LEFT+len-10 : RIGHT-len+10, a.y+9, 18);
+  }
+
+  // crushers
+  for (const c of crushers){
+    const h = crushY(c);
+    ctx.fillStyle='#888'; ctx.fillRect(c.x, BANDS.crushTop, 110, h);
+    ctx.fillStyle='#555'; ctx.fillRect(c.x, BANDS.crushTop+h-6, 110, 6);
+    emoji('🔨', c.x+55, BANDS.crushTop+h-14, 20);
+  }
+
+  // maze walls
+  ctx.fillStyle='#4a7a2a';
+  for (const w of walls){
+    if (w.y<BANDS.mazeTop-WT || w.y>BANDS.crushTop) continue; // only draw inner maze walls green
+    ctx.fillRect(w.x,w.y,w.w,w.h);
+  }
+  // outer border walls
+  ctx.fillStyle='#3a2a14';
+  ctx.fillRect(0,0,LEFT,H); ctx.fillRect(RIGHT,0,W-RIGHT,H);
+  ctx.fillRect(0,0,W,TOP); ctx.fillRect(0,BOTTOM,W,H-BOTTOM);
+  // toilet pocket wall
+  ctx.fillStyle='#4a7a2a'; ctx.fillRect(540,78,WT,52);
+
+  // secret toilet
+  if (!toiletUsed) emoji('🚽', toilet.x, toilet.y, 26);
+
+  // spiky boys
+  for (const b of spikyBoys) emoji('⚡', b.x, b.y, 24);
+
+  // zombies / skeleton start
+  emoji('💀', W/2, H-22, 26);
+  for (const z of zombies) emoji('🧟', z.x, z.y, 24);
+
+  // goal
+  emoji('🍦', goal.x, goal.y, 34);
+
+  // player — a clearly visible person with a bright ring so you can always see them
+  if (!(invuln>0 && (T>>2)&1)){
+    ctx.save();
+    // glowing halo
+    ctx.fillStyle='rgba(0,255,255,0.35)';
+    ctx.beginPath(); ctx.arc(player.x,player.y,PR+7,0,7); ctx.fill();
+    // white pad behind the person so they pop on dark/lava tiles
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.arc(player.x,player.y,PR+2,0,7); ctx.fill();
+    ctx.lineWidth=3; ctx.strokeStyle='#00e5ff'; ctx.stroke();
+    // the person
+    emoji('🧑', player.x, player.y, 26);
+    ctx.restore();
+    // "YOU" label floating above so it's never lost
+    ctx.fillStyle='#00e5ff';
+    ctx.font='bold 11px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('YOU', player.x, player.y - PR - 12);
+  }
+
+  // overlay
+  if (state==='win' || state==='lose'){
+    ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = state==='win'? 'gold':'#f55';
+    ctx.font='bold 40px sans-serif'; ctx.textAlign='center';
+    ctx.fillText(state==='win'?'🏆 YOU WIN! 🍦':'🚔 JAIL! 🚔', W/2, H/2);
+  }
+}
+
+function updateHUD(){
+  hudEl.textContent = '❤️'.repeat(Math.max(0,hearts)) + '  ' +
+    (state==='play' ? 'Climb to the 🍦!' : state==='win' ? 'WINNER!' : state==='lose' ? 'Caught!' : 'Ready');
+}
+
+// ---------- loop ----------
+function frame(){
+  update();
+  draw();
+  updateHUD();
+  requestAnimationFrame(frame);
+}
+
+function start(){
+  reset();
+  state='play';
+  statusEl.textContent='GO! Climb up past the zombies, lava, spikes, trucks, arms, crushers, and the maze!';
+}
+
+startBtn.onclick = start;
+reset();
+state='ready';
+statusEl.textContent='Press START to begin the gauntlet!';
+updateHUD();
+draw();
+frame();
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    up:'ArrowUp', down:'ArrowDown', left:'ArrowLeft', right:'ArrowRight',
+    a:'Space', b:'Space', start:'Space'
+  }]
+});
+</script>
+</body>
+</html>

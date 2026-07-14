@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Demolition Derby</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: 'Arial Black', Arial, sans-serif;
+      overflow: hidden;
+      user-select: none;
+    }
+    #header {
+      color: #ff4400;
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: 4px;
+      text-shadow: 0 0 20px #ff4400, 0 0 40px #ff2200;
+      margin-bottom: 4px;
+    }
+    #hint { color: #555; font-size: 11px; margin-bottom: 5px; letter-spacing: 1px; }
+    canvas {
+      display: block;
+      border: 4px solid #ff4400;
+      box-shadow: 0 0 30px #ff440055, 0 0 60px #ff220022;
+    }
+  </style>
+</head>
+<body>
+  <div id="header">💥 DEMOLITION DERBY 💥</div>
+  <div id="hint">ARROW KEYS / WASD to drive &nbsp;·&nbsp; Smash rivals &nbsp;·&nbsp; 100 pts wins!</div>
+  <canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx    = canvas.getContext('2d');
+canvas.width  = 960;
+canvas.height = 700;
+
+// ── Huge circular arena ───────────────────────────────────────────
+const ARENA = { cx: 480, cy: 358, r: 312 };
+
+// ── Vehicle definitions — HP as specified ─────────────────────────
+//    derby=20 hp · racecar=1 hp · monster=6 hp · semi=100 hp
+const VDEFS = {
+  derby: {
+    label:'DERBY CAR',   desc:'Balanced brawler. Tougher than it looks.',
+    w:28, h:48, maxHP:20,  topSpeed:2.6, accel:0.18, turnRate:0.062,
+    dmgMult:1.0, color:'#00aaff', collR:32, destroyPts:25
+  },
+  racecar: {
+    label:'RACE CAR',    desc:'Lightning fast — but 1 HP! One hit and you\'re done.',
+    w:22, h:50, maxHP:1,   topSpeed:3.9, accel:0.26, turnRate:0.075,
+    dmgMult:0.8, color:'#ff2255', collR:28, destroyPts:18
+  },
+  monster: {
+    label:'MONSTER TRUCK', desc:'Huge wheels, 6 HP. Surprise glass cannon!',
+    w:40, h:52, maxHP:6,   topSpeed:2.1, accel:0.15, turnRate:0.052,
+    dmgMult:1.55, color:'#22cc44', collR:42, destroyPts:32
+  },
+  semi: {
+    label:'SEMI TRUCK',  desc:'100 HP. The ultimate tank. Crushes everything.',
+    w:38, h:72, maxHP:100, topSpeed:1.6, accel:0.11, turnRate:0.038,
+    dmgMult:2.1, color:'#ffaa00', collR:48, destroyPts:40
+  }
+};
+const TYPE_KEYS = ['derby','racecar','monster','semi'];
+
+// ── Arena modes ───────────────────────────────────────────────────
+const MODES = {
+  land: {
+    label:'LAND DERBY', emoji:'🏁',
+    desc:'Classic dirt arena. Old-school demolition.',
+    groundCol:'#3d3a28', wallCol:'#888', bgCol:'#111',
+    particleCol:'#ff8800', accentCol:'rgba(200,200,100,0.12)'
+  },
+  sky: {
+    label:'SKY DERBY', emoji:'☁️',
+    desc:'Battle above the clouds at full altitude!',
+    groundCol:'#6ec6f0', wallCol:'#c0e0ff', bgCol:'#4aa8d8',
+    particleCol:'#ffffff', accentCol:'rgba(255,255,255,0.18)'
+  },
+  water: {
+    label:'WATER DERBY', emoji:'🌊',
+    desc:'High-speed boats on the open sea. Splash zone!',
+    groundCol:'#155f80', wallCol:'#0a4060', bgCol:'#0a3048',
+    particleCol:'#44bbff', accentCol:'rgba(100,200,255,0.14)'
+  }
+};
+const MODE_KEYS = ['land','sky','water'];
+
+// ── Pre-generate dirt marks (land mode) ──────────────────────────
+const dirtMarks = [];
+for (let i=0;i<60;i++){
+  const a=Math.random()*Math.PI*2, r=Math.random()*(ARENA.r-30);
+  dirtMarks.push({
+    x:ARENA.cx+Math.cos(a)*r, y:ARENA.cy+Math.sin(a)*r,
+    len:12+Math.random()*55, angle:Math.random()*Math.PI,
+    alpha:0.07+Math.random()*0.12
+  });
+}
+
+// ── Clouds (sky mode) ─────────────────────────────────────────────
+const clouds = [];
+for(let i=0;i<14;i++){
+  const a=Math.random()*Math.PI*2, r=Math.random()*(ARENA.r-40);
+  clouds.push({
+    x:ARENA.cx+Math.cos(a)*r, y:ARENA.cy+Math.sin(a)*r,
+    w:55+Math.random()*90, h:22+Math.random()*28,
+    vx:0.1+Math.random()*0.22,
+    alpha:0.25+Math.random()*0.45
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────
+function shade(col, amt){
+  let n=parseInt(col.replace('#',''),16);
+  const r=Math.min(255,Math.max(0,(n>>16)+amt));
+  const g=Math.min(255,Math.max(0,((n>>8)&0xff)+amt));
+  const b=Math.min(255,Math.max(0,(n&0xff)+amt));
+  return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);
+}
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+// ── Vehicle draw functions ────────────────────────────────────────
+function drawDerby(car){
+  const {w,h}=car.def, hr=Math.max(car.health/car.def.maxHP,0);
+  ctx.scale(1,1-(1-hr)*0.2);
+  ctx.fillStyle=car.color; ctx.fillRect(-w/2,-h/2,w,h);
+  ctx.fillStyle=shade(car.color,-30); ctx.fillRect(-w/2+3,-h/2+10,w-6,h-22);
+  ctx.fillStyle=car.isPlayer?'rgba(160,230,255,.85)':'rgba(100,160,200,.5)';
+  ctx.fillRect(-w/2+5,-h/2+6,w-10,13);
+  ctx.fillStyle='rgba(80,130,170,.4)'; ctx.fillRect(-w/2+5,h/2-17,w-10,10);
+  ctx.fillStyle='#ffffcc'; ctx.fillRect(-w/2+2,-h/2,6,4); ctx.fillRect(w/2-8,-h/2,6,4);
+  ctx.fillStyle='#ff2200'; ctx.fillRect(-w/2+2,h/2-4,6,4); ctx.fillRect(w/2-8,h/2-4,6,4);
+  ctx.fillStyle='#111';
+  ctx.fillRect(-w/2-5,-h/2+4,6,13); ctx.fillRect(w/2-1,-h/2+4,6,13);
+  ctx.fillRect(-w/2-5,h/2-17,6,13); ctx.fillRect(w/2-1,h/2-17,6,13);
+  ctx.strokeStyle='rgba(0,0,0,.55)'; ctx.lineWidth=1.5;
+  if(hr<.75){ctx.beginPath();ctx.moveTo(-6,-12);ctx.lineTo(8,3);ctx.stroke();}
+  if(hr<.40){ctx.beginPath();ctx.moveTo(5,-18);ctx.lineTo(-4,2);ctx.stroke();}
+}
+function drawRace(car){
+  const {w,h}=car.def, hr=Math.max(car.health/car.def.maxHP,0);
+  ctx.scale(1,1-(1-hr)*0.12);
+  ctx.fillStyle=car.color; ctx.fillRect(-w/2,-h/2,w,h);
+  ctx.fillStyle=shade(car.color,-20); ctx.fillRect(-w/2-4,-h/2+14,6,h-30); ctx.fillRect(w/2-2,-h/2+14,6,h-30);
+  ctx.fillStyle=shade(car.color,-40); ctx.fillRect(-w/2+3,-h/2+8,w-6,h*.44);
+  ctx.fillStyle=car.isPlayer?'rgba(160,240,255,.9)':'rgba(80,180,220,.6)';
+  ctx.fillRect(-w/2+5,-h/2+10,w-10,10);
+  ctx.fillStyle='#222'; ctx.fillRect(-w/2-3,h/2-8,w+6,5); ctx.fillRect(-w/2,h/2-12,3,8); ctx.fillRect(w/2-3,h/2-12,3,8);
+  ctx.fillStyle='#333'; ctx.fillRect(-w/2-2,-h/2,w+4,4);
+  ctx.fillStyle='#111';
+  ctx.fillRect(-w/2-5,-h/2+5,5,16); ctx.fillRect(w/2,-h/2+5,5,16);
+  ctx.fillRect(-w/2-5,h/2-21,5,16); ctx.fillRect(w/2,h/2-21,5,16);
+  ctx.fillStyle='rgba(255,255,255,.5)'; ctx.font='bold 9px Arial'; ctx.textAlign='center';
+  ctx.fillText('88',0,-h/2+22); ctx.textAlign='left';
+}
+function drawMonster(car){
+  const {w,h}=car.def, hr=Math.max(car.health/car.def.maxHP,0);
+  ctx.scale(1,1-(1-hr)*0.18);
+  const ww=14,wh=20;
+  ctx.fillStyle='#111';
+  ctx.fillRect(-w/2-ww+2,-h/2+4,ww,wh); ctx.fillRect(w/2-2,-h/2+4,ww,wh);
+  ctx.fillRect(-w/2-ww+2,h/2-wh-4,ww,wh); ctx.fillRect(w/2-2,h/2-wh-4,ww,wh);
+  ctx.strokeStyle='#333'; ctx.lineWidth=2;
+  [-h/2+8,-h/2+13,-h/2+18].forEach(ty=>{
+    ctx.beginPath();ctx.moveTo(-w/2-ww+3,ty);ctx.lineTo(-w/2+2,ty);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(w/2-1,ty);ctx.lineTo(w/2+ww-2,ty);ctx.stroke();
+  });
+  [h/2-wh,h/2-wh+5,h/2-wh+10].forEach(ty=>{
+    ctx.beginPath();ctx.moveTo(-w/2-ww+3,ty);ctx.lineTo(-w/2+2,ty);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(w/2-1,ty);ctx.lineTo(w/2+ww-2,ty);ctx.stroke();
+  });
+  ctx.fillStyle=car.color; ctx.fillRect(-w/2,-h/2,w,h);
+  ctx.fillStyle=shade(car.color,-35); ctx.fillRect(-w/2+3,-h/2+6,w-6,h-12);
+  ctx.fillStyle=car.isPlayer?'rgba(160,230,255,.85)':'rgba(100,160,200,.5)';
+  ctx.fillRect(-w/2+5,-h/2+8,w-10,16);
+  ctx.fillStyle='#222'; ctx.fillRect(-w/2+4,-h/2,w-8,7);
+  ctx.strokeStyle='#444'; ctx.lineWidth=1;
+  for(let gx=-w/2+7;gx<w/2-4;gx+=5){ctx.beginPath();ctx.moveTo(gx,-h/2+1);ctx.lineTo(gx,-h/2+6);ctx.stroke();}
+  ctx.fillStyle='#ffffcc'; ctx.fillRect(-w/2+4,-h/2,8,5); ctx.fillRect(w/2-12,-h/2,8,5);
+  ctx.fillStyle='#555'; ctx.fillRect(-w/2+5,-h/2-8,5,10); ctx.fillRect(w/2-10,-h/2-8,5,10);
+  ctx.fillStyle='#333'; ctx.fillRect(-w/2+6,-h/2-10,3,4); ctx.fillRect(w/2-9,-h/2-10,3,4);
+  ctx.strokeStyle='rgba(0,0,0,.5)'; ctx.lineWidth=2;
+  if(hr<.60){ctx.beginPath();ctx.moveTo(-8,-10);ctx.lineTo(10,5);ctx.stroke();}
+  if(hr<.30){ctx.beginPath();ctx.moveTo(6,-16);ctx.lineTo(-6,4);ctx.stroke();}
+}
+function drawSemi(car){
+  const {w,h}=car.def, hr=Math.max(car.health/car.def.maxHP,0);
+  const cabH=h*.38, trailerH=h*.58, gap=3;
+  ctx.scale(1,1-(1-hr)*0.1);
+  const ty=-h/2+cabH+gap;
+  ctx.fillStyle=shade(car.color,-45); ctx.fillRect(-w/2,ty,w,trailerH);
+  ctx.strokeStyle=shade(car.color,-60); ctx.lineWidth=1;
+  for(let s=1;s<5;s++){const sy=ty+(trailerH/5)*s;ctx.beginPath();ctx.moveTo(-w/2+2,sy);ctx.lineTo(w/2-2,sy);ctx.stroke();}
+  const axY=ty+trailerH*.65;
+  ctx.fillStyle='#111';
+  ctx.fillRect(-w/2-5,axY-7,6,14); ctx.fillRect(w/2-1,axY-7,6,14);
+  ctx.fillRect(-w/2-5,axY+4,6,14); ctx.fillRect(w/2-1,axY+4,6,14);
+  ctx.fillStyle=car.color; ctx.fillRect(-w/2,-h/2,w,cabH);
+  ctx.fillStyle=shade(car.color,-20); ctx.fillRect(-w/2+2,-h/2+2,w-4,cabH-4);
+  ctx.fillStyle=car.isPlayer?'rgba(180,240,255,.9)':'rgba(100,160,210,.6)';
+  ctx.fillRect(-w/2+4,-h/2+5,w-8,14);
+  ctx.fillStyle='#aaa'; ctx.fillRect(-w/2-2,-h/2-4,w+4,6);
+  ctx.fillStyle='#333'; ctx.fillRect(-w/2+3,-h/2,w-6,7);
+  ctx.strokeStyle='#555'; ctx.lineWidth=1.5;
+  for(let gx=-w/2+6;gx<w/2-3;gx+=6){ctx.beginPath();ctx.moveTo(gx,-h/2+1);ctx.lineTo(gx,-h/2+6);ctx.stroke();}
+  ctx.fillStyle='#ffffaa'; ctx.fillRect(-w/2+3,-h/2,8,5); ctx.fillRect(w/2-11,-h/2,8,5);
+  ctx.fillStyle='#666'; ctx.fillRect(-w/2+6,-h/2-14,5,16); ctx.fillRect(w/2-11,-h/2-14,5,16);
+  ctx.fillStyle='#444'; ctx.fillRect(-w/2+7,-h/2-16,3,5); ctx.fillRect(w/2-10,-h/2-16,3,5);
+  ctx.fillStyle='#111'; ctx.fillRect(-w/2-5,-h/2+cabH-18,6,14); ctx.fillRect(w/2-1,-h/2+cabH-18,6,14);
+  ctx.strokeStyle='rgba(0,0,0,.5)'; ctx.lineWidth=2;
+  if(hr<.60){ctx.beginPath();ctx.moveTo(-8,-5);ctx.lineTo(10,8);ctx.stroke();}
+  if(hr<.30){ctx.beginPath();ctx.moveTo(7,-12);ctx.lineTo(-5,5);ctx.stroke();}
+}
+
+// ── Mode-specific vehicle decorations ────────────────────────────
+function drawWings(car){
+  // Sky mode: biplane-style wings on all cars
+  if(car.destroyed) return;
+  const hw=car.def.w/2;
+  ctx.fillStyle='rgba(255,255,255,0.82)';
+  ctx.beginPath(); ctx.moveTo(-hw,-4); ctx.lineTo(-hw-22,-14); ctx.lineTo(-hw-18,8); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(hw,-4);  ctx.lineTo(hw+22,-14);  ctx.lineTo(hw+18,8);  ctx.closePath(); ctx.fill();
+  // propeller on front
+  ctx.fillStyle='rgba(220,240,255,0.7)';
+  ctx.fillRect(-12,-car.def.h/2-6,24,4);
+  ctx.fillRect(-2,-car.def.h/2-14,4,20);
+}
+function drawWake(car){
+  // Water mode: V-shaped wake trail behind car
+  if(car.destroyed||Math.abs(car.speed)<0.15) return;
+  const spd=Math.abs(car.speed);
+  const len=spd*30, spread=12;
+  ctx.strokeStyle=`rgba(200,240,255,${Math.min(spd/3*0.55,0.55)})`;
+  ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(-spread*0.6,car.def.h/2); ctx.lineTo(-spread-8,car.def.h/2+len); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo( spread*0.6,car.def.h/2); ctx.lineTo( spread+8,car.def.h/2+len); ctx.stroke();
+  // foam dots
+  ctx.fillStyle=`rgba(255,255,255,${Math.min(spd/3*0.4,0.4)})`;
+  for(let i=0;i<3;i++){
+    ctx.beginPath();
+    ctx.arc((Math.random()-.5)*spread*1.5,car.def.h/2+len*(.3+i*.25),2+Math.random()*2,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+// ── Car Class ─────────────────────────────────────────────────────
+class Car{
+  constructor(x,y,typeKey,color,isPlayer){
+    this.x=x; this.y=y;
+    this.typeKey=typeKey; this.def=VDEFS[typeKey];
+    this.color=color||this.def.color; this.isPlayer=isPlayer;
+    this.angle=Math.random()*Math.PI*2;
+    this.speed=0; this.vx=0; this.vy=0;
+    this.health=this.def.maxHP;
+    this.destroyed=false; this.score=0;
+    this.hitFlash=0; this.smoke=[];
+    this.aiTimer=0; this.aiTarget=Math.random()*Math.PI*2; this.aiMode='wander';
+  }
+  curTopSpeed(){
+    const hr=this.health/this.def.maxHP;
+    if(hr>.55) return this.def.topSpeed;
+    if(hr>.25) return this.def.topSpeed*.7;
+    return this.def.topSpeed*.42;
+  }
+  update(keys){
+    if(this.destroyed){
+      this.smoke=this.smoke.filter(s=>{s.life-=.016;s.y-=.28;s.r+=.2;return s.life>0;});
+      return;
+    }
+    const ms=this.curTopSpeed(), ac=this.def.accel, tr=this.def.turnRate;
+    if(this.isPlayer){
+      const up=keys['ArrowUp']||keys['w']||keys['W'];
+      const dn=keys['ArrowDown']||keys['s']||keys['S'];
+      const lt=keys['ArrowLeft']||keys['a']||keys['A'];
+      const rt=keys['ArrowRight']||keys['d']||keys['D'];
+      if(up)      this.speed=Math.min(this.speed+ac, ms);
+      else if(dn) this.speed=Math.max(this.speed-ac,-ms*.5);
+      else        this.speed*=.90;
+      // responsive turning even at low speed
+      const dir=this.speed<-0.08?-1:1;
+      if(lt) this.angle-=tr*dir;
+      if(rt) this.angle+=tr*dir;
+    } else {
+      this.aiTimer--;
+      if(this.aiTimer<=0){
+        this.aiTimer=32+Math.random()*75;
+        this.aiMode=Math.random()<0.62&&player&&!player.destroyed?'chase':'wander';
+        if(this.aiMode==='wander') this.aiTarget=Math.random()*Math.PI*2;
+      }
+      if(this.aiMode==='chase'&&player&&!player.destroyed){
+        const dx=player.x-this.x, dy=player.y-this.y;
+        this.aiTarget=Math.atan2(dy,dx)+Math.PI/2;
+      }
+      // steer away from wall
+      const dc=Math.hypot(this.x-ARENA.cx,this.y-ARENA.cy);
+      if(dc>ARENA.r-105) this.aiTarget=Math.atan2(ARENA.cy-this.y,ARENA.cx-this.x)+Math.PI/2;
+      let diff=this.aiTarget-this.angle;
+      while(diff>Math.PI)diff-=Math.PI*2;
+      while(diff<-Math.PI)diff+=Math.PI*2;
+      this.angle+=diff*0.055;
+      this.speed=Math.min(this.speed+ac*0.68, ms*0.85);
+    }
+    this.vx=Math.sin(this.angle)*this.speed;
+    this.vy=-Math.cos(this.angle)*this.speed;
+    this.x+=this.vx; this.y+=this.vy;
+    // circular wall bounce
+    const dc=Math.hypot(this.x-ARENA.cx,this.y-ARENA.cy);
+    const bound=ARENA.r-this.def.w/2-5;
+    if(dc>bound&&dc>0){
+      const nx=(this.x-ARENA.cx)/dc, ny=(this.y-ARENA.cy)/dc;
+      this.x=ARENA.cx+nx*bound; this.y=ARENA.cy+ny*bound;
+      this.speed*=-.42;
+    }
+    // smoke
+    const hr=this.health/this.def.maxHP;
+    if(hr<0.55&&Math.random()<0.30) this.smoke.push({x:this.x,y:this.y,life:1,r:4+Math.random()*6});
+    this.smoke=this.smoke.filter(s=>{s.life-=.016;s.y-=.28;s.r+=.2;return s.life>0;});
+    this.hitFlash=Math.max(0,this.hitFlash-1);
+  }
+  takeDamage(amount, attacker){
+    if(this.destroyed) return;
+    const dmg=amount*(attacker?attacker.def.dmgMult:1);
+    this.health-=dmg;
+    this.hitFlash=7;
+    if(this.health<=0){
+      this.health=0; this.destroyed=true; this.speed=0;
+      spawnExplosion(this.x,this.y);
+      spawnParticles(this.x,this.y,this.color,20);
+      if(attacker&&attacker.isPlayer){
+        const pts=this.def.destroyPts;
+        attacker.score+=pts;
+        floatingTexts.push({x:this.x,y:this.y-30,text:`TOTALED! +${pts}`,color:'#ff4400',life:1.8,big:true});
+      }
+    }
+  }
+  draw(){
+    this.smoke.forEach(s=>{
+      ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+      ctx.fillStyle=`rgba(75,75,75,${s.life*.38})`; ctx.fill();
+    });
+    ctx.save(); ctx.translate(this.x,this.y); ctx.rotate(this.angle);
+
+    // water wake (drawn first, behind car)
+    if(currentMode==='water'&&!this.destroyed){ drawWake(this); }
+
+    if(this.destroyed){
+      ctx.fillStyle='#1c1c1c'; ctx.fillRect(-this.def.w/2,-this.def.h/2,this.def.w,this.def.h);
+      ctx.fillStyle='#111';    ctx.fillRect(-this.def.w/2+3,-this.def.h/2+3,this.def.w-6,this.def.h-6);
+      ctx.restore(); return;
+    }
+    if(this.hitFlash>0){
+      ctx.globalAlpha=.4; ctx.fillStyle='#fff';
+      ctx.fillRect(-this.def.w/2-4,-this.def.h/2-4,this.def.w+8,this.def.h+8);
+      ctx.globalAlpha=1;
+    }
+    ctx.fillStyle='rgba(0,0,0,.2)'; ctx.fillRect(-this.def.w/2+5,-this.def.h/2+5,this.def.w,this.def.h);
+    if     (this.typeKey==='derby')  drawDerby(this);
+    else if(this.typeKey==='racecar')drawRace(this);
+    else if(this.typeKey==='monster')drawMonster(this);
+    else if(this.typeKey==='semi')   drawSemi(this);
+    // sky wings (drawn on top)
+    if(currentMode==='sky') drawWings(this);
+    ctx.restore();
+
+    // player arrow
+    if(this.isPlayer&&!this.destroyed){
+      ctx.save(); ctx.translate(this.x,this.y); ctx.rotate(this.angle);
+      ctx.fillStyle='#ffff00'; ctx.shadowColor='#ffff00'; ctx.shadowBlur=10;
+      ctx.beginPath(); ctx.moveTo(0,-this.def.h/2-16); ctx.lineTo(-8,-this.def.h/2-5); ctx.lineTo(8,-this.def.h/2-5); ctx.closePath(); ctx.fill();
+      ctx.shadowBlur=0; ctx.restore();
+    }
+    // health bar
+    if(!this.destroyed){
+      const hr=this.health/this.def.maxHP;
+      const bw=Math.max(38,this.def.w+10), bh=5;
+      const bx=this.x-bw/2, by=this.y-this.def.h/2-16;
+      ctx.fillStyle='#1a1a1a'; ctx.fillRect(bx-1,by-1,bw+2,bh+2);
+      ctx.fillStyle=hr>.5?'#22dd22':hr>.25?'#ffaa00':'#ff2222';
+      ctx.fillRect(bx,by,bw*Math.min(hr,1),bh);
+      // show numeric HP for low-HP vehicles
+      if(this.def.maxHP<=20){
+        ctx.font='bold 9px Arial'; ctx.fillStyle='#fff'; ctx.textAlign='center';
+        ctx.fillText(Math.ceil(this.health)+'/'+this.def.maxHP, this.x, by-2);
+        ctx.textAlign='left';
+      }
+    }
+  }
+}
+
+// ── Effects ───────────────────────────────────────────────────────
+let particles=[],explosions=[],floatingTexts=[];
+function spawnParticles(x,y,color,n){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2, s=1.5+Math.random()*5;
+    particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,color,life:1,r:2+Math.random()*4});
+  }
+}
+function spawnExplosion(x,y){
+  explosions.push({x,y,r:5,maxR:80,life:1});
+  const m=MODES[currentMode||'land'];
+  spawnParticles(x,y,m.particleCol,8);
+  spawnParticles(x,y,'#ff8800',8);
+  spawnParticles(x,y,'#ffdd00',6);
+  shakeX=(Math.random()-.5)*22; shakeY=(Math.random()-.5)*22;
+}
+
+// ── Collision ─────────────────────────────────────────────────────
+function checkCollisions(cars){
+  for(let i=0;i<cars.length;i++){
+    for(let j=i+1;j<cars.length;j++){
+      const a=cars[i],b=cars[j];
+      if(a.destroyed||b.destroyed) continue;
+      const dx=b.x-a.x, dy=b.y-a.y, dist=Math.hypot(dx,dy);
+      const minD=(a.def.collR+b.def.collR)/2;
+      if(dist<minD&&dist>0){
+        const relV=Math.hypot(a.vx-b.vx,a.vy-b.vy);
+        if(relV>.4){
+          // Damage scaled to the low HP values
+          const base=relV*0.55;
+          a.takeDamage(base,b); b.takeDamage(base,a);
+          if(!b.destroyed&&a.isPlayer){const p=Math.floor(relV*2);if(p>0){a.score+=p;floatingTexts.push({x:b.x,y:b.y-28,text:'+'+p,color:'#ffee00',life:1});}}
+          if(!a.destroyed&&b.isPlayer){const p=Math.floor(relV*2);if(p>0){b.score+=p;floatingTexts.push({x:a.x,y:a.y-28,text:'+'+p,color:'#ffee00',life:1});}}
+          const cx=(a.x+b.x)/2, cy=(a.y+b.y)/2;
+          spawnParticles(cx,cy,'#ffcc44',4); spawnParticles(cx,cy,'#ff8800',3);
+          const nx=dx/dist, ny=dy/dist, push=(minD-dist)/2;
+          a.x-=nx*push; a.y-=ny*push; b.x+=nx*push; b.y+=ny*push;
+          a.speed*=-.38; b.speed*=-.38;
+        }
+      }
+    }
+  }
+}
+
+// ── Game state ────────────────────────────────────────────────────
+let keys={}, player, cars;
+let gameState='vehicleSelect';
+let selectedVehicle=0, selectedMode=0;
+let currentMode='land';
+let shakeX=0, shakeY=0;
+
+// ── Mini vehicle preview ──────────────────────────────────────────
+function drawMini(typeKey,color,cx,cy,sc){
+  ctx.save(); ctx.translate(cx,cy); ctx.scale(sc,sc);
+  const def=VDEFS[typeKey];
+  const fake={def,color,health:def.maxHP,isPlayer:false,typeKey};
+  if     (typeKey==='derby')  drawDerby(fake);
+  else if(typeKey==='racecar')drawRace(fake);
+  else if(typeKey==='monster')drawMonster(fake);
+  else if(typeKey==='semi')   drawSemi(fake);
+  ctx.restore();
+}
+
+// ── Vehicle Select Screen ─────────────────────────────────────────
+function drawVehicleSelect(){
+  ctx.fillStyle='#0e0e0e'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // faint arena preview
+  ctx.beginPath(); ctx.arc(ARENA.cx,ARENA.cy,ARENA.r,0,Math.PI*2);
+  ctx.fillStyle='rgba(40,38,28,0.28)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,68,0,0.08)'; ctx.lineWidth=8; ctx.stroke();
+
+  ctx.textAlign='center';
+  ctx.font='bold 44px Arial Black'; ctx.fillStyle='#ff4400';
+  ctx.shadowColor='#ff4400'; ctx.shadowBlur=20;
+  ctx.fillText('DEMOLITION DERBY',canvas.width/2,68); ctx.shadowBlur=0;
+  ctx.font='bold 20px Arial'; ctx.fillStyle='#ffdd00';
+  ctx.fillText('STEP 1 — PICK YOUR VEHICLE',canvas.width/2,104);
+
+  const cW=188,cH=282,gap=16;
+  const total=cW*4+gap*3, sx=(canvas.width-total)/2, cY=125;
+
+  TYPE_KEYS.forEach((key,i)=>{
+    const def=VDEFS[key], cx=sx+i*(cW+gap), sel=i===selectedVehicle;
+    ctx.fillStyle=sel?'rgba(255,80,0,0.2)':'rgba(255,255,255,0.04)';
+    ctx.strokeStyle=sel?'#ff4400':'#333'; ctx.lineWidth=sel?3:1;
+    roundRect(cx,cY,cW,cH,10); ctx.fill(); ctx.stroke();
+
+    const sc=key==='semi'?.85:key==='monster'?.95:1.05;
+    drawMini(key,def.color,cx+cW/2,cY+96,sc);
+
+    ctx.font=`bold ${sel?15:13}px Arial Black`;
+    ctx.fillStyle=sel?'#ffdd00':'#bbb';
+    ctx.fillText(def.label,cx+cW/2,cY+18);
+
+    // HP badge
+    ctx.font='bold 12px Arial Black';
+    const hpCol=def.maxHP>=100?'#ffaa00':def.maxHP>=20?'#22cc44':def.maxHP>=6?'#ff8800':'#ff2255';
+    ctx.fillStyle=hpCol;
+    ctx.fillText(`❤ ${def.maxHP} HP`,cx+cW/2,cY+34);
+
+    ctx.font='11px Arial'; ctx.fillStyle='#888';
+    let words=def.desc.split(' '),line='',ly=cY+190;
+    words.forEach(w=>{const t=line+w+' ';if(ctx.measureText(t).width>cW-18&&line){ctx.fillText(line,cx+cW/2,ly);ly+=13;line=w+' ';}else line=t;}); ctx.fillText(line,cx+cW/2,ly);
+
+    [['SPEED',def.topSpeed/4.2],['ARMOR',def.maxHP/100],['DAMAGE',def.dmgMult/2.2]].forEach(([lbl,val],si)=>{
+      const bx=cx+14, by=cY+225+si*16, bw=cW-28;
+      ctx.fillStyle='#1e1e1e'; ctx.fillRect(bx,by,bw,8);
+      ctx.fillStyle=['#00aaff','#22dd22','#ff4400'][si];
+      ctx.fillRect(bx,by,bw*Math.min(val,1),8);
+      ctx.font='8px Arial'; ctx.fillStyle='#666'; ctx.textAlign='left';
+      ctx.fillText(lbl,bx,by-1); ctx.textAlign='center';
+    });
+    if(sel){ctx.font='bold 11px Arial Black'; ctx.fillStyle='#ff4400'; ctx.fillText('▲ SELECTED',cx+cW/2,cY+cH-9);}
+  });
+  ctx.textAlign='center';
+  ctx.font='bold 15px Arial'; ctx.fillStyle='#666';
+  ctx.fillText('← → to browse    ENTER to continue',canvas.width/2,cY+cH+28);
+  ctx.textAlign='left';
+}
+
+// ── Arena Mode Select Screen ──────────────────────────────────────
+function drawModeSelect(){
+  ctx.fillStyle='#0e0e0e'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  ctx.textAlign='center';
+  ctx.font='bold 44px Arial Black'; ctx.fillStyle='#ff4400';
+  ctx.shadowColor='#ff4400'; ctx.shadowBlur=20;
+  ctx.fillText('DEMOLITION DERBY',canvas.width/2,68); ctx.shadowBlur=0;
+  ctx.font='bold 20px Arial'; ctx.fillStyle='#ffdd00';
+  ctx.fillText('STEP 2 — PICK YOUR ARENA',canvas.width/2,104);
+
+  const cW=250,cH=320,gap=30;
+  const total=cW*3+gap*2, sx=(canvas.width-total)/2, cY=130;
+
+  MODE_KEYS.forEach((key,i)=>{
+    const mode=MODES[key], cx=sx+i*(cW+gap), sel=i===selectedMode;
+
+    // Card background — mini arena preview
+    ctx.save();
+    roundRect(cx,cY,cW,cH,12); ctx.clip();
+    // mini sky/water/land bg
+    if(key==='sky'){
+      const g=ctx.createLinearGradient(cx,cY,cx,cY+cH);
+      g.addColorStop(0,'#3a9fd8'); g.addColorStop(1,'#7ecfee');
+      ctx.fillStyle=g; ctx.fillRect(cx,cY,cW,cH);
+      // mini clouds
+      ctx.fillStyle='rgba(255,255,255,0.5)';
+      [[cx+50,cY+60,55,20],[cx+150,cY+100,70,22],[cx+30,cY+150,45,18],[cx+170,cY+200,60,20]].forEach(([x,y,w,h])=>{
+        ctx.beginPath(); ctx.ellipse(x,y,w/2,h/2,0,0,Math.PI*2); ctx.fill();
+      });
+    } else if(key==='water'){
+      const g=ctx.createLinearGradient(cx,cY,cx,cY+cH);
+      g.addColorStop(0,'#0a3048'); g.addColorStop(1,'#155f80');
+      ctx.fillStyle=g; ctx.fillRect(cx,cY,cW,cH);
+      // mini waves
+      ctx.strokeStyle='rgba(100,200,255,0.3)'; ctx.lineWidth=2;
+      for(let wy=cY+40;wy<cY+cH;wy+=28){
+        ctx.beginPath();
+        for(let wx=cx;wx<=cx+cW;wx+=8){
+          const amp=5, freq=0.06;
+          wy===cY+40?ctx.moveTo(wx,wy+Math.sin(wx*freq)*amp):ctx.lineTo(wx,wy+Math.sin(wx*freq)*amp);
+        }
+        ctx.stroke();
+      }
+    } else {
+      const g=ctx.createLinearGradient(cx,cY,cx,cY+cH);
+      g.addColorStop(0,'#2a2818'); g.addColorStop(1,'#3d3a28');
+      ctx.fillStyle=g; ctx.fillRect(cx,cY,cW,cH);
+      // mini dirt marks
+      ctx.strokeStyle='rgba(40,33,18,0.4)'; ctx.lineWidth=2;
+      [[cx+40,cY+80,60,0.4],[cx+150,cY+120,40,1.1],[cx+60,cY+200,80,0.8],[cx+130,cY+260,50,0.2]].forEach(([x,y,l,a])=>{
+        ctx.save(); ctx.translate(x,y); ctx.rotate(a);
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(l,0); ctx.stroke(); ctx.restore();
+      });
+    }
+    ctx.restore();
+
+    // Card outline
+    ctx.fillStyle=sel?'rgba(255,80,0,0.15)':'rgba(0,0,0,0.35)';
+    ctx.strokeStyle=sel?'#ff4400':'#444'; ctx.lineWidth=sel?3:1;
+    roundRect(cx,cY,cW,cH,12); ctx.fill(); ctx.stroke();
+
+    // Emoji + label
+    ctx.font='48px Arial'; ctx.textAlign='center';
+    ctx.fillText(mode.emoji,cx+cW/2,cY+55);
+    ctx.font=`bold ${sel?18:16}px Arial Black`;
+    ctx.fillStyle=sel?'#ffdd00':'#eee';
+    ctx.shadowColor='rgba(0,0,0,0.8)'; ctx.shadowBlur=6;
+    ctx.fillText(mode.label,cx+cW/2,cY+82); ctx.shadowBlur=0;
+
+    // Mini circular arena preview
+    const preR=78, preCX=cx+cW/2, preCY=cY+185;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(preCX,preCY,preR,0,Math.PI*2); ctx.clip();
+    ctx.fillStyle=mode.groundCol; ctx.fillRect(preCX-preR,preCY-preR,preR*2,preR*2);
+    ctx.restore();
+    ctx.beginPath(); ctx.arc(preCX,preCY,preR,0,Math.PI*2);
+    ctx.strokeStyle=mode.wallCol; ctx.lineWidth=5; ctx.stroke();
+
+    // Description
+    ctx.font='12px Arial'; ctx.fillStyle='#aaa';
+    ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=8;
+    ctx.fillText(mode.desc,cx+cW/2,cY+cH-14); ctx.shadowBlur=0;
+
+    if(sel){ctx.font='bold 11px Arial Black'; ctx.fillStyle='#ff4400'; ctx.fillText('▲ SELECTED',cx+cW/2,cY+cH-28);}
+  });
+
+  ctx.textAlign='center';
+  ctx.font='bold 15px Arial'; ctx.fillStyle='#666';
+  ctx.fillText('← → to browse    ENTER to start    ESC to go back',canvas.width/2,cY+cH+28);
+  ctx.font='12px Arial'; ctx.fillStyle='#444';
+  ctx.fillText('10 rivals  ·  huge circular arena  ·  100 pts to win',canvas.width/2,cY+cH+48);
+  ctx.textAlign='left';
+}
+
+// ── Init Game ─────────────────────────────────────────────────────
+function initGame(typeKey, mode){
+  particles=[]; explosions=[]; floatingTexts=[];
+  gameState='playing'; currentMode=mode;
+  shakeX=0; shakeY=0;
+  const def=VDEFS[typeKey];
+  player=new Car(ARENA.cx,ARENA.cy,typeKey,def.color,true);
+
+  // 10 AI rivals with variety
+  const aiRoster=[
+    ['semi','#ff3333'],['monster','#ee44ee'],['racecar','#ff8833'],
+    ['derby','#44ffaa'],['racecar','#ff6688'],['monster','#ffff44'],
+    ['semi','#aa66ff'],['derby','#ff9966'],['racecar','#44ddff'],['derby','#ff4466']
+  ];
+  cars=[player];
+  aiRoster.forEach(([t,col])=>{
+    let x,y,tries=0;
+    do{
+      const a=Math.random()*Math.PI*2, r=80+Math.random()*(ARENA.r-120);
+      x=ARENA.cx+Math.cos(a)*r; y=ARENA.cy+Math.sin(a)*r; tries++;
+    } while(Math.hypot(x-player.x,y-player.y)<150&&tries<60);
+    cars.push(new Car(x,y,t,col,false));
+  });
+}
+
+// ── Update ────────────────────────────────────────────────────────
+function update(){
+  if(gameState!=='playing') return;
+  cars.forEach(c=>c.update(keys));
+  checkCollisions(cars);
+  // animate clouds
+  if(currentMode==='sky'){
+    clouds.forEach(c=>{
+      c.x+=c.vx;
+      // wrap inside arena circle
+      const dc=Math.hypot(c.x-ARENA.cx,c.y-ARENA.cy);
+      if(dc>ARENA.r-20){
+        const a=Math.atan2(c.y-ARENA.cy,c.x-ARENA.cx);
+        c.x=ARENA.cx+Math.cos(a+Math.PI)*(ARENA.r*0.6);
+        c.y=ARENA.cy+Math.sin(a+Math.PI)*(ARENA.r*0.6);
+      }
+    });
+  }
+  particles=particles.filter(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=.93;p.vy*=.93;p.life-=.026;return p.life>0;});
+  explosions=explosions.filter(e=>{e.r+=(e.maxR-e.r)*.15;e.life-=.05;return e.life>0;});
+  floatingTexts=floatingTexts.filter(t=>{t.y-=.80;t.life-=.019;return t.life>0;});
+  if(!player.destroyed){
+    if(player.score>=100||cars.filter(c=>!c.isPlayer).every(c=>c.destroyed)) gameState='won';
+  } else gameState='lost';
+}
+
+// ── Draw Arena ────────────────────────────────────────────────────
+function drawArena(){
+  const mode=MODES[currentMode];
+  // clip to circle
+  ctx.save();
+  ctx.beginPath(); ctx.arc(ARENA.cx,ARENA.cy,ARENA.r,0,Math.PI*2); ctx.clip();
+
+  if(currentMode==='land'){
+    ctx.fillStyle=mode.groundCol;
+    ctx.fillRect(ARENA.cx-ARENA.r,ARENA.cy-ARENA.r,ARENA.r*2,ARENA.r*2);
+    dirtMarks.forEach(m=>{
+      ctx.save(); ctx.translate(m.x,m.y); ctx.rotate(m.angle);
+      ctx.strokeStyle=`rgba(38,33,18,${m.alpha})`; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(m.len,0); ctx.stroke();
+      ctx.restore();
+    });
+  } else if(currentMode==='sky'){
+    const g=ctx.createRadialGradient(ARENA.cx,ARENA.cy-80,50,ARENA.cx,ARENA.cy,ARENA.r);
+    g.addColorStop(0,'#8fdaf8'); g.addColorStop(1,'#4daed6');
+    ctx.fillStyle=g; ctx.fillRect(ARENA.cx-ARENA.r,ARENA.cy-ARENA.r,ARENA.r*2,ARENA.r*2);
+    // clouds
+    clouds.forEach(cl=>{
+      ctx.save(); ctx.globalAlpha=cl.alpha;
+      ctx.fillStyle='#ffffff';
+      const blobs=[{dx:0,dy:0,rx:cl.w/2,ry:cl.h/2},{dx:-cl.w*0.3,dy:cl.h*0.1,rx:cl.w*0.3,ry:cl.h*0.38},{dx:cl.w*0.3,dy:cl.h*0.1,rx:cl.w*0.28,ry:cl.h*0.35},{dx:0,dy:-cl.h*0.2,rx:cl.w*0.25,ry:cl.h*0.30}];
+      blobs.forEach(b=>{ctx.beginPath();ctx.ellipse(cl.x+b.dx,cl.y+b.dy,b.rx,b.ry,0,0,Math.PI*2);ctx.fill();});
+      ctx.restore();
+    });
+  } else if(currentMode==='water'){
+    const g=ctx.createRadialGradient(ARENA.cx,ARENA.cy,20,ARENA.cx,ARENA.cy,ARENA.r);
+    g.addColorStop(0,'#1e7aa0'); g.addColorStop(1,'#0d4060');
+    ctx.fillStyle=g; ctx.fillRect(ARENA.cx-ARENA.r,ARENA.cy-ARENA.r,ARENA.r*2,ARENA.r*2);
+    // animated wave lines
+    const t=Date.now()/1300;
+    for(let row=0;row<14;row++){
+      const wy=ARENA.cy-ARENA.r+40+row*(ARENA.r*2-60)/13;
+      const alpha=0.08+Math.sin(row*0.5+t*0.4)*0.04;
+      ctx.strokeStyle=`rgba(120,210,255,${alpha})`; ctx.lineWidth=1.5;
+      ctx.beginPath();
+      for(let wx=ARENA.cx-ARENA.r;wx<=ARENA.cx+ARENA.r;wx+=6){
+        const yOff=Math.sin(wx*0.03+t+row*0.6)*7;
+        wx===ARENA.cx-ARENA.r?ctx.moveTo(wx,wy+yOff):ctx.lineTo(wx,wy+yOff);
+      }
+      ctx.stroke();
+    }
+    // surface shimmer
+    ctx.fillStyle='rgba(160,230,255,0.04)';
+    for(let s=0;s<8;s++){
+      const sx=ARENA.cx+(Math.sin(t*0.7+s*1.1)*ARENA.r*0.7);
+      const sy=ARENA.cy+(Math.cos(t*0.5+s*0.9)*ARENA.r*0.6);
+      ctx.beginPath(); ctx.ellipse(sx,sy,30+Math.sin(t+s)*15,8,Math.sin(t*0.3+s)*0.5,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  // centre dashed ring
+  ctx.strokeStyle=mode.accentCol; ctx.lineWidth=3; ctx.setLineDash([14,22]);
+  ctx.beginPath(); ctx.arc(ARENA.cx,ARENA.cy,120,0,Math.PI*2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore(); // end clip
+
+  // Outer wall rings
+  ctx.beginPath(); ctx.arc(ARENA.cx,ARENA.cy,ARENA.r+2,0,Math.PI*2);
+  ctx.strokeStyle='#1a1a1a'; ctx.lineWidth=8; ctx.stroke();
+  ctx.beginPath(); ctx.arc(ARENA.cx,ARENA.cy,ARENA.r,0,Math.PI*2);
+  ctx.strokeStyle=mode.wallCol; ctx.lineWidth=8; ctx.stroke();
+  ctx.beginPath(); ctx.arc(ARENA.cx,ARENA.cy,ARENA.r-6,0,Math.PI*2);
+  ctx.strokeStyle=shade(mode.wallCol,-40); ctx.lineWidth=2; ctx.stroke();
+}
+
+// ── Draw HUD ──────────────────────────────────────────────────────
+function drawHUD(){
+  const alive=cars.filter(c=>!c.isPlayer&&!c.destroyed).length;
+  const mode=MODES[currentMode];
+
+  // Score bar
+  ctx.fillStyle='rgba(0,0,0,.72)'; ctx.fillRect(8,6,300,24);
+  const bw=284, prog=Math.min(player.score/100,1);
+  ctx.fillStyle='#1a1a1a'; ctx.fillRect(12,9,bw,15);
+  const g=ctx.createLinearGradient(12,0,12+bw*prog,0);
+  g.addColorStop(0,'#ff4400'); g.addColorStop(1,'#ffee00');
+  ctx.fillStyle=g; ctx.fillRect(12,9,bw*prog,15);
+  ctx.strokeStyle='#333'; ctx.lineWidth=1; ctx.strokeRect(12,9,bw,15);
+  ctx.font='bold 12px Arial'; ctx.fillStyle='#fff'; ctx.textAlign='left';
+  ctx.fillText(`SCORE: ${player.score} / 100`,16,21);
+
+  // Rivals
+  ctx.fillStyle='rgba(0,0,0,.72)'; ctx.fillRect(canvas.width-200,6,192,24);
+  ctx.font='bold 12px Arial'; ctx.textAlign='right'; ctx.fillStyle='#ccc';
+  ctx.fillText(`Rivals left: ${alive} / 10`,canvas.width-12,22);
+
+  // Vehicle badge + HP
+  ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(8,34,260,36);
+  ctx.font='11px Arial Black'; ctx.textAlign='left'; ctx.fillStyle=player.color;
+  ctx.fillText(`▶ ${VDEFS[player.typeKey].label}`,14,48);
+  const hr=player.health/player.def.maxHP;
+  ctx.fillStyle=hr>.5?'#22dd22':hr>.25?'#ffaa00':'#ff2222';
+  ctx.fillText(`❤ ${Math.ceil(player.health)} / ${player.def.maxHP} HP`,14,64);
+
+  // Mode badge
+  ctx.fillStyle='rgba(0,0,0,.6)'; ctx.fillRect(canvas.width-190,34,182,20);
+  ctx.font='11px Arial Black'; ctx.textAlign='right'; ctx.fillStyle='#aaa';
+  ctx.fillText(`${mode.emoji} ${mode.label}`,canvas.width-12,49);
+  ctx.textAlign='left';
+}
+
+// ── Main Draw ─────────────────────────────────────────────────────
+function draw(){
+  if(gameState==='vehicleSelect'){drawVehicleSelect();return;}
+  if(gameState==='modeSelect'){drawModeSelect();return;}
+
+  ctx.save(); ctx.translate(shakeX,shakeY);
+  shakeX*=.72; shakeY*=.72;
+  const mode=MODES[currentMode];
+  ctx.fillStyle=mode.bgCol; ctx.fillRect(-10,-10,canvas.width+20,canvas.height+20);
+  drawArena();
+
+  explosions.forEach(e=>{
+    const g=ctx.createRadialGradient(e.x,e.y,0,e.x,e.y,e.r);
+    g.addColorStop(0,`rgba(255,240,100,${e.life*.9})`);
+    g.addColorStop(.4,`rgba(255,100,0,${e.life*.7})`);
+    g.addColorStop(1,'rgba(50,10,0,0)');
+    ctx.beginPath(); ctx.arc(e.x,e.y,e.r,0,Math.PI*2); ctx.fillStyle=g; ctx.fill();
+  });
+  cars.filter(c=>c.destroyed).forEach(c=>c.draw());
+  cars.filter(c=>!c.destroyed).forEach(c=>c.draw());
+  particles.forEach(p=>{
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*Math.max(p.life,.1),0,Math.PI*2);
+    ctx.fillStyle=p.color; ctx.globalAlpha=p.life; ctx.fill(); ctx.globalAlpha=1;
+  });
+  floatingTexts.forEach(t=>{
+    ctx.font=`bold ${t.big?16:18}px Arial Black`; ctx.textAlign='center';
+    ctx.globalAlpha=Math.min(t.life,1);
+    ctx.fillStyle='#000'; ctx.fillText(t.text,t.x+1,t.y+1);
+    ctx.fillStyle=t.color; ctx.fillText(t.text,t.x,t.y);
+    ctx.globalAlpha=1;
+  });
+  ctx.restore();
+  drawHUD();
+
+  // End overlay
+  if(gameState==='won'||gameState==='lost'){
+    ctx.fillStyle='rgba(0,0,0,.78)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.textAlign='center';
+    if(gameState==='won'){
+      ctx.font='bold 82px Arial Black'; ctx.fillStyle='#ffee00';
+      ctx.shadowColor='#ff8800'; ctx.shadowBlur=32;
+      ctx.fillText('YOU WIN!',canvas.width/2,canvas.height/2-55);
+    } else {
+      ctx.font='bold 82px Arial Black'; ctx.fillStyle='#ff2200';
+      ctx.shadowColor='#ff0000'; ctx.shadowBlur=32;
+      ctx.fillText('WRECKED!',canvas.width/2,canvas.height/2-55);
+    }
+    ctx.shadowBlur=0;
+    ctx.font='bold 26px Arial'; ctx.fillStyle='#fff';
+    ctx.fillText(`Score: ${player.score} pts`,canvas.width/2,canvas.height/2+8);
+    ctx.font='16px Arial'; ctx.fillStyle='#888';
+    ctx.fillText('ENTER — play again    ESC — pick new vehicle / arena',canvas.width/2,canvas.height/2+48);
+    ctx.textAlign='left';
+  }
+}
+
+// ── Loop ──────────────────────────────────────────────────────────
+function loop(){ update(); draw(); requestAnimationFrame(loop); }
+
+// ── Input ─────────────────────────────────────────────────────────
+document.addEventListener('keydown',e=>{
+  keys[e.key]=true;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+
+  if(gameState==='vehicleSelect'){
+    if(e.key==='ArrowLeft' ||e.key==='a'||e.key==='A') selectedVehicle=(selectedVehicle-1+TYPE_KEYS.length)%TYPE_KEYS.length;
+    if(e.key==='ArrowRight'||e.key==='d'||e.key==='D') selectedVehicle=(selectedVehicle+1)%TYPE_KEYS.length;
+    if(e.key==='Enter'||e.key===' ') gameState='modeSelect';
+  } else if(gameState==='modeSelect'){
+    if(e.key==='ArrowLeft' ||e.key==='a'||e.key==='A') selectedMode=(selectedMode-1+MODE_KEYS.length)%MODE_KEYS.length;
+    if(e.key==='ArrowRight'||e.key==='d'||e.key==='D') selectedMode=(selectedMode+1)%MODE_KEYS.length;
+    if(e.key==='Enter'||e.key===' ') initGame(TYPE_KEYS[selectedVehicle], MODE_KEYS[selectedMode]);
+    if(e.key==='Escape') gameState='vehicleSelect';
+  } else if(gameState==='won'||gameState==='lost'){
+    if(e.key==='Enter')  initGame(TYPE_KEYS[selectedVehicle], MODE_KEYS[selectedMode]);
+    if(e.key==='Escape') gameState='vehicleSelect';
+  }
+});
+document.addEventListener('keyup',e=>{ keys[e.key]=false; });
+
+loop();
+</script>
+<script src="gamepad.js"></script>
+<script>
+setupGamepad({
+  mirrorSingle: true,
+  players: [{
+    up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+    a: 'Enter', b: 'Escape', start: 'Enter', back: 'Escape'
+  }]
+});
+</script>
+</body>
+</html>

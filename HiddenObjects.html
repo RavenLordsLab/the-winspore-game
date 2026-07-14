@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hidden Pictures — Mega Edition</title>
+<style>
+  body { font-family: Georgia, serif; background: #2a2418; color: #f4ecd8; text-align: center; margin: 0; padding: 8px; }
+  h1 { margin: 4px 0; font-size: 22px; color: #f4ecd8; }
+  #status { margin: 4px auto 8px; font-size: 12px; max-width: 1700px; display: flex; flex-wrap: wrap; justify-content: center; gap: 3px 8px; }
+  #status .item { padding: 2px 8px; border-radius: 12px; background: #4a3e28; color: #f4ecd8; border: 1px solid #6a5a40;}
+  #status .item.found { color: #7cffb2; text-decoration: line-through; background: #20402d; border-color: #3a6a3a;}
+  #scene-wrap { overflow: auto; max-width: 100%; max-height: 80vh; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.6); border: 4px solid #6a5a40;}
+  #scene { display: block; margin: 0; background: #f4ecd8; }
+  .hidden { cursor: pointer; }
+  .hidden:hover { filter: drop-shadow(0 0 4px #ff0) drop-shadow(0 0 9px #ff0); }
+  .hidden.found { filter: drop-shadow(0 0 4px #0f6) drop-shadow(0 0 9px #0f6); pointer-events: none; }
+  #toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-80px); background: #00aa55; color:#fff; padding: 10px 22px; border-radius: 8px; font-size: 16px; transition: transform .3s; z-index: 10; }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #win { margin-top: 8px; font-size: 22px; color: #ffd84d; font-weight: bold; min-height: 28px; }
+  .controls { margin-top: 4px; }
+  button { margin: 0 4px; padding: 6px 14px; background: #6a5a40; color:#f4ecd8; border:none; border-radius:6px; cursor:pointer; font-size: 13px; font-family: Georgia, serif;}
+  button:hover { background:#8a7a60; }
+  #counter { font-size: 14px; color: #f4ecd8; margin-top: 4px; }
+  .peek .hidden:not(.found) { outline: 2px dashed red; outline-offset: 1px; }
+</style>
+</head>
+<body>
+  <h1>Hidden Pictures — Mega Edition (scroll the picture!)</h1>
+  <div id="counter">Found <span id="found-n">0</span> of <span id="total-n">0</span></div>
+  <div id="status"></div>
+
+  <div id="scene-wrap">
+    <svg id="scene" viewBox="0 0 4800 3000" width="4800" height="3000" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="dots" width="6" height="6" patternUnits="userSpaceOnUse">
+          <circle cx="2" cy="2" r="0.6" fill="#8a7a50" opacity="0.35"/>
+        </pattern>
+        <pattern id="grass" width="20" height="14" patternUnits="userSpaceOnUse">
+          <path d="M0,14 L4,5 L8,14 M10,14 L14,4 L18,14" stroke="#5a8a3a" stroke-width="0.9" fill="none"/>
+        </pattern>
+        <pattern id="bricks" width="40" height="20" patternUnits="userSpaceOnUse">
+          <rect width="40" height="20" fill="#e8d8b0"/>
+          <path d="M0,0 H40 M0,10 H40 M20,0 V10 M0,10 V20 M40,10 V20" stroke="#a08a60" stroke-width="0.5"/>
+        </pattern>
+        <pattern id="field" width="60" height="40" patternUnits="userSpaceOnUse">
+          <rect width="60" height="40" fill="#e8c870"/>
+          <path d="M0,8 H60 M0,18 H60 M0,28 H60 M0,38 H60" stroke="#a8884a" stroke-width="0.5"/>
+        </pattern>
+      </defs>
+
+      <!-- background fills -->
+      <rect x="0" y="0" width="4800" height="1100" fill="#cfe6f0"/>
+      <rect x="0" y="0" width="4800" height="1100" fill="url(#dots)"/>
+      <rect x="0" y="1100" width="4800" height="1900" fill="#bcd99c"/>
+      <rect x="0" y="1100" width="4800" height="1900" fill="url(#grass)" opacity="0.5"/>
+
+      <g id="scene-content"></g>
+    </svg>
+  </div>
+
+  <div class="controls">
+    <button id="hint">Hint (name one)</button>
+    <button id="peek">Peek (3s outlines)</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div id="win"></div>
+  <div id="toast"></div>
+
+<script>
+// ---------- Seeded RNG so the scene is stable ----------
+let seed = 12345;
+function rng() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+function rand(a,b){ return a + rng()*(b-a); }
+function pick(arr){ return arr[Math.floor(rng()*arr.length)]; }
+
+const svgNS = "http://www.w3.org/2000/svg";
+const root = document.getElementById('scene-content');
+
+function el(tag, attrs={}, parent=root) {
+  const n = document.createElementNS(svgNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  parent.appendChild(n);
+  return n;
+}
+
+// ---------- Mountains far in distance ----------
+function mountains() {
+  const g = el('g');
+  for (let x=-100; x<4800; x+=rand(160,280)) {
+    const h = rand(180, 380);
+    const w = rand(300, 500);
+    const col = pick(['#8a96a8','#7a8698','#9aa6b8','#6a7688']);
+    el('polygon', {points:`${x},1100 ${x+w/2},${1100-h} ${x+w},1100`, fill: col, stroke:'#3a3a3a', 'stroke-width':1}, g);
+    // snow cap
+    const sx = x+w/2;
+    const sy = 1100-h;
+    el('polygon', {points:`${sx-22},${sy+30} ${sx},${sy} ${sx+22},${sy+30} ${sx+10},${sy+35} ${sx},${sy+22} ${sx-10},${sy+35}`, fill:'#fff'}, g);
+  }
+}
+
+// ---------- Clouds ----------
+function clouds() {
+  const g = el('g');
+  for (let i=0; i<40; i++) {
+    const cx = rand(0, 4800), cy = rand(60, 700);
+    const cg = el('g', {opacity: 0.95}, g);
+    for (let j=0; j<rand(3,6); j++) {
+      el('circle', {cx: cx + j*rand(20,35), cy: cy + rand(-8,8), r: rand(18,38), fill:'#fff', stroke:'#a8b8c8','stroke-width':1}, cg);
+    }
+  }
+}
+
+// ---------- Birds (decorative) ----------
+function decorBirds() {
+  const g = el('g', {stroke:'#222','stroke-width':2, fill:'none'});
+  for (let i=0; i<80; i++) {
+    const x = rand(0,4800), y = rand(150, 900);
+    el('path', {d:`M${x},${y} q8,-8 16,0 q8,-8 16,0`}, g);
+  }
+}
+
+// ---------- Sun ----------
+function sun() {
+  el('circle', {cx: 4400, cy: 220, r: 80, fill:'#ffd84d', stroke:'#a8841a','stroke-width':2});
+  el('circle', {cx: 4400, cy: 220, r: 110, fill:'#ffd84d', opacity:0.2});
+  const rays = el('g', {stroke:'#a8841a','stroke-width':2, opacity:0.55});
+  for (let a=0; a<360; a+=20) {
+    const r1=120, r2=145, rad=a*Math.PI/180;
+    el('line', {x1:4400+Math.cos(rad)*r1, y1:220+Math.sin(rad)*r1, x2:4400+Math.cos(rad)*r2, y2:220+Math.sin(rad)*r2}, rays);
+  }
+}
+
+// ---------- Trees (Highlights style: simple, outlined) ----------
+function tree(x, y, scale=1, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y}) scale(${scale})`}, parent);
+  el('rect', {x:-8, y:0, width:16, height:60, fill:'#6b4226', stroke:'#3a2410','stroke-width':1.2}, g);
+  const palette = pick([['#3e8e41','#5cb464','#4ca454'],['#2e7a31','#4ca454','#3e8e41'],['#5a9a4a','#7aba6a','#5cb464']]);
+  el('circle', {cx:0, cy:-10, r:38, fill:palette[0], stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('circle', {cx:-22, cy:10, r:26, fill:palette[1], stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('circle', {cx:22, cy:10, r:26, fill:palette[2], stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('circle', {cx:0, cy:25, r:24, fill:palette[1], stroke:'#1a3a1a','stroke-width':1.2}, g);
+  return g;
+}
+function pine(x, y, scale=1, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y}) scale(${scale})`}, parent);
+  el('rect', {x:-6, y:0, width:12, height:40, fill:'#6b4226', stroke:'#3a2410','stroke-width':1.2}, g);
+  el('polygon', {points:'-32,0 32,0 0,-50', fill:'#2e7a31', stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('polygon', {points:'-28,-25 28,-25 0,-70', fill:'#3e8e41', stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('polygon', {points:'-22,-50 22,-50 0,-90', fill:'#4ca454', stroke:'#1a3a1a','stroke-width':1.2}, g);
+}
+
+// ---------- Houses (Highlights cottage style) ----------
+function house(x, y, w=120, h=110, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y})`}, parent);
+  const wallCol = pick(['#f0d8a8','#e8c89c','#d8b890','#f4e4c0','#fce8c4','#e0c098','#f8d8b0']);
+  const roofCol = pick(['#a14b3a','#7a3528','#5a8a3a','#3a5a8a','#8a3a5a','#7a5a3a','#6a4a2a']);
+  el('rect', {x:0, y:0, width:w, height:h, fill:wallCol, stroke:'#3a2410','stroke-width':1.5}, g);
+  const roofH = rand(40, 70);
+  el('polygon', {points:`-8,0 ${w+8},0 ${w/2},${-roofH}`, fill:roofCol, stroke:'#3a2410','stroke-width':1.5}, g);
+  // door
+  const dw=22, dh=42, dx=w/2-dw/2;
+  el('rect', {x:dx, y:h-dh, width:dw, height:dh, fill:'#5b3a1e', stroke:'#3a2410','stroke-width':1}, g);
+  el('circle', {cx:dx+dw-4, cy:h-dh/2, r:1.6, fill:'#ffd84d'}, g);
+  // windows
+  const wn = w>140?2:1;
+  for (let i=0; i<wn; i++) {
+    const wx = wn===2 ? (i===0? 10 : w-30) : 10;
+    el('rect', {x:wx, y:14, width:20, height:20, fill:'#bde0fe', stroke:'#3a2410','stroke-width':1}, g);
+    el('line', {x1:wx+10, y1:14, x2:wx+10, y2:34, stroke:'#3a2410','stroke-width':0.8}, g);
+    el('line', {x1:wx, y1:24, x2:wx+20, y2:24, stroke:'#3a2410','stroke-width':0.8}, g);
+    if (wn===1 && w>=100) {
+      el('rect', {x:w-30, y:14, width:20, height:20, fill:'#bde0fe', stroke:'#3a2410','stroke-width':1}, g);
+      el('line', {x1:w-20, y1:14, x2:w-20, y2:34, stroke:'#3a2410','stroke-width':0.8}, g);
+      el('line', {x1:w-30, y1:24, x2:w-10, y2:24, stroke:'#3a2410','stroke-width':0.8}, g);
+    }
+  }
+  // chimney
+  if (rng() > 0.4) el('rect', {x:w-30, y:-roofH+12, width:12, height:24, fill:'#7a3528', stroke:'#3a2410','stroke-width':1}, g);
+  return g;
+}
+
+// ---------- Village clusters: 100 houses ----------
+function village(cx, cy, count) {
+  const placed = [];
+  let tries = 0;
+  while (placed.length < count && tries < count*30) {
+    tries++;
+    const w = Math.round(rand(80, 160));
+    const h = Math.round(rand(70, 130));
+    const x = cx + rand(-350, 350);
+    const y = cy + rand(-200, 200);
+    let ok = true;
+    for (const p of placed) {
+      if (x < p.x+p.w+10 && x+w+10 > p.x && y < p.y+p.h+10 && y+h+10 > p.y) { ok = false; break; }
+    }
+    if (!ok) continue;
+    placed.push({x,y,w,h});
+    house(x, y, w, h);
+  }
+  return placed.length;
+}
+
+// ---------- Rivers / lakes ----------
+function river() {
+  const g = el('g');
+  const path = `M0,2100 Q400,2050 800,2110 Q1200,2170 1600,2110 Q2000,2050 2400,2100 Q2800,2150 3200,2100 Q3600,2050 4000,2110 Q4400,2160 4800,2110 L4800,2200 Q4400,2250 4000,2200 Q3600,2140 3200,2200 Q2800,2240 2400,2200 Q2000,2150 1600,2210 Q1200,2260 800,2200 Q400,2150 0,2200 Z`;
+  el('path', {d:path, fill:'#7cc0e0', stroke:'#3a6a8a','stroke-width':2}, g);
+  // ripples
+  for (let i=0; i<60; i++) {
+    el('path', {d:`M${rand(0,4800)},${2150+rand(-30,30)} q15,-3 30,0`, stroke:'#fff', 'stroke-width':1.5, fill:'none', opacity:0.6}, g);
+  }
+}
+function lake(cx, cy, rx, ry) {
+  el('ellipse', {cx, cy, rx, ry, fill:'#7cc0e0', stroke:'#3a6a8a','stroke-width':2});
+  for (let i=0; i<10; i++) {
+    el('path', {d:`M${cx+rand(-rx*0.7,rx*0.7)},${cy+rand(-ry*0.6,ry*0.6)} q15,-3 30,0`, stroke:'#fff', 'stroke-width':1.5, fill:'none', opacity:0.6});
+  }
+}
+
+// ---------- Fields ----------
+function field(x, y, w, h) {
+  el('rect', {x, y, width:w, height:h, fill:'url(#field)', stroke:'#5a4020','stroke-width':2});
+}
+
+// ---------- Bushes ----------
+function bush(x, y, scale=1, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y}) scale(${scale})`}, parent);
+  el('ellipse', {cx:0, cy:0, rx:60, ry:22, fill:'#3e8e41', stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('ellipse', {cx:-30, cy:-8, rx:32, ry:18, fill:'#4ca454', stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('ellipse', {cx:30, cy:-8, rx:32, ry:18, fill:'#5cb464', stroke:'#1a3a1a','stroke-width':1.2}, g);
+  el('ellipse', {cx:0, cy:-18, rx:24, ry:14, fill:'#6cc474', stroke:'#1a3a1a','stroke-width':1.2}, g);
+  return g;
+}
+
+// ---------- Flowers ----------
+function flower(x, y, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y})`}, parent);
+  el('rect', {x:-1.5, y:0, width:3, height:28, fill:'#3e7a32'}, g);
+  const c = pick(['#ff5577','#ffd84d','#a86bff','#ff8a3a','#ffffff','#ff3a3a']);
+  for (let i=0; i<5; i++) {
+    const a = i*72*Math.PI/180;
+    el('circle', {cx:Math.cos(a)*5, cy:Math.sin(a)*5, r:4, fill:c, stroke:'#3a2410','stroke-width':0.5}, g);
+  }
+  el('circle', {cx:0, cy:0, r:3, fill:'#ffd84d', stroke:'#3a2410','stroke-width':0.5}, g);
+}
+
+// ---------- Fence ----------
+function fence(x1, x2, y) {
+  const g = el('g', {stroke:'#3a2410', 'stroke-width':1, fill:'#f4ecd8'});
+  for (let x=x1; x<x2; x+=22) {
+    el('rect', {x:x, y:y, width:10, height:55}, g);
+    el('polygon', {points:`${x},${y} ${x+5},${y-6} ${x+10},${y}`}, g);
+  }
+  el('line', {x1:x1, y1:y+14, x2:x2, y2:y+14}, g);
+  el('line', {x1:x1, y1:y+38, x2:x2, y2:y+38}, g);
+}
+
+// ---------- People (Highlights style stick figures) ----------
+function person(x, y, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y})`, stroke:'#3a2410', 'stroke-width':1.5, fill:'none'}, parent);
+  const shirt = pick(['#d33','#3a8','#33d','#fa3','#d3a','#3d3']);
+  const pants = pick(['#3a2410','#1a3a8a','#2a2a2a','#5a4a2a']);
+  el('circle', {cx:0, cy:0, r:6, fill:'#f4d4a8'}, g);
+  el('path', {d:'M-7,8 L-7,22 L7,22 L7,8 Z', fill:shirt}, g);
+  el('line', {x1:-7, y1:10, x2:-14, y2:20}, g);
+  el('line', {x1:7, y1:10, x2:14, y2:20}, g);
+  el('line', {x1:-4, y1:22, x2:-6, y2:36, stroke:pants, 'stroke-width':3}, g);
+  el('line', {x1:4, y1:22, x2:6, y2:36, stroke:pants, 'stroke-width':3}, g);
+}
+
+// ---------- Cows / sheep -----------
+function sheep(x, y, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y})`}, parent);
+  el('ellipse', {cx:0, cy:0, rx:18, ry:12, fill:'#fff', stroke:'#3a2410', 'stroke-width':1.2}, g);
+  el('circle', {cx:-16, cy:-3, r:6, fill:'#3a2410'}, g);
+  el('circle', {cx:-18, cy:-5, r:1, fill:'#fff'}, g);
+  el('line', {x1:-8, y1:10, x2:-8, y2:18, stroke:'#3a2410','stroke-width':1.5}, g);
+  el('line', {x1:8, y1:10, x2:8, y2:18, stroke:'#3a2410','stroke-width':1.5}, g);
+}
+function cow(x, y, parent=root) {
+  const g = el('g', {transform:`translate(${x} ${y})`}, parent);
+  el('ellipse', {cx:0, cy:0, rx:24, ry:14, fill:'#fff', stroke:'#3a2410', 'stroke-width':1.2}, g);
+  el('ellipse', {cx:-8, cy:-3, rx:6, ry:4, fill:'#3a2410'}, g);
+  el('ellipse', {cx:6, cy:4, rx:8, ry:5, fill:'#3a2410'}, g);
+  el('circle', {cx:-22, cy:-4, r:7, fill:'#fff', stroke:'#3a2410','stroke-width':1.2}, g);
+  el('line', {x1:-26, y1:-10, x2:-28, y2:-13, stroke:'#3a2410','stroke-width':1.5}, g);
+  el('line', {x1:-12, y1:12, x2:-12, y2:20, stroke:'#3a2410','stroke-width':1.5}, g);
+  el('line', {x1:12, y1:12, x2:12, y2:20, stroke:'#3a2410','stroke-width':1.5}, g);
+}
+
+// ============================================================
+// BUILD THE SCENE
+// ============================================================
+mountains();
+clouds();
+sun();
+decorBirds();
+
+// Castle on a hill
+(function castle(){
+  const cx = 600, cy = 1080;
+  el('polygon', {points:`${cx-300},${cy} ${cx},${cy-150} ${cx+300},${cy}`, fill:'#a89a78', stroke:'#5a4020','stroke-width':2});
+  // main keep
+  el('rect', {x:cx-60, y:cy-260, width:120, height:160, fill:'url(#bricks)', stroke:'#5a4020','stroke-width':2});
+  el('polygon', {points:`${cx-60},${cy-260} ${cx+60},${cy-260} ${cx+60},${cy-275} ${cx+45},${cy-275} ${cx+45},${cy-260} ${cx+25},${cy-260} ${cx+25},${cy-275} ${cx+5},${cy-275} ${cx+5},${cy-260} ${cx-15},${cy-260} ${cx-15},${cy-275} ${cx-35},${cy-275} ${cx-35},${cy-260} ${cx-55},${cy-260} ${cx-55},${cy-275}`, fill:'#a89a78', stroke:'#5a4020','stroke-width':2});
+  el('polygon', {points:`${cx-60},${cy-260} ${cx+60},${cy-260} ${cx},${cy-330}`, fill:'#7a3528', stroke:'#3a2410','stroke-width':2});
+  el('rect', {x:cx-12, y:cy-160, width:24, height:50, fill:'#2a2a2a'});
+  el('rect', {x:cx-45, y:cy-230, width:18, height:18, fill:'#2a2a2a'});
+  el('rect', {x:cx+27, y:cy-230, width:18, height:18, fill:'#2a2a2a'});
+  // attached wall
+  el('rect', {x:cx+60, y:cy-180, width:200, height:80, fill:'url(#bricks)', stroke:'#5a4020','stroke-width':2});
+  el('rect', {x:cx-260, y:cy-150, width:180, height:50, fill:'url(#bricks)', stroke:'#5a4020','stroke-width':2});
+  // flag
+  el('line', {x1:cx, y1:cy-330, x2:cx, y2:cy-380, stroke:'#3a2410','stroke-width':2});
+  el('polygon', {points:`${cx},${cy-380} ${cx+25},${cy-372} ${cx},${cy-365}`, fill:'#d33', stroke:'#3a2410','stroke-width':1});
+})();
+
+// ---------- 100 houses spread across 10 villages ----------
+const villageCenters = [
+  [1100, 1500], [1500, 1450], [2000, 1500],
+  [2500, 1450], [3000, 1500], [3500, 1450],
+  [4100, 1500], [1300, 1850], [2300, 1850], [3300, 1850]
+];
+let houseTotal = 0;
+for (const [vx, vy] of villageCenters) houseTotal += village(vx, vy, 10);
+
+// ---------- Rivers / lake ----------
+river();
+lake(800, 2400, 240, 80);
+lake(4200, 2500, 280, 90);
+
+// Bridge over river
+(function bridge(){
+  const bx = 2400, by = 2100;
+  el('rect', {x:bx-80, y:by-30, width:160, height:14, fill:'#a07050', stroke:'#3a2410','stroke-width':1.5});
+  el('path', {d:`M${bx-80},${by-30} q80,-60 160,0`, stroke:'#3a2410', 'stroke-width':3, fill:'none'});
+  for (let i=-60; i<=60; i+=20) el('line', {x1:bx+i, y1:by-30, x2:bx+i, y2:by-30 - (Math.abs(i)<60? 30-(i*i)/120 : 0), stroke:'#3a2410','stroke-width':1});
+})();
+
+// ---------- Fields (farm patches) ----------
+field(150, 2350, 360, 200);
+field(560, 2350, 300, 200);
+field(3700, 2350, 380, 200);
+field(4150, 2350, 350, 200);
+
+// ---------- Big foreground bushes ----------
+const bushSpots = [
+  [200, 2750, 1.6],[600, 2780, 1.3],[1000, 2770, 1.5],[1400, 2790, 1.4],[1800, 2760, 1.7],
+  [2200, 2780, 1.3],[2600, 2790, 1.5],[3000, 2760, 1.4],[3400, 2780, 1.6],[3800, 2770, 1.3],
+  [4200, 2790, 1.5],[4600, 2760, 1.4]
+];
+bushSpots.forEach(([x,y,s])=>bush(x,y,s));
+
+// ---------- Forests ----------
+function forest(x1, x2, y1, y2, count) {
+  for (let i=0; i<count; i++) {
+    const x = rand(x1, x2);
+    const y = rand(y1, y2);
+    if (rng() > 0.4) tree(x, y, rand(0.7, 1.3));
+    else pine(x, y, rand(0.7, 1.3));
+  }
+}
+forest(0, 1000, 1300, 2000, 60);
+forest(3900, 4800, 1300, 2000, 60);
+forest(0, 4800, 1900, 2050, 50);
+forest(0, 4800, 2600, 2900, 70);
+
+// ---------- Flowers everywhere ----------
+for (let i=0; i<200; i++) flower(rand(50, 4750), rand(2700, 2950));
+for (let i=0; i<80; i++) flower(rand(50, 4750), rand(1300, 1500));
+
+// ---------- Fences ----------
+fence(150, 800, 2700);
+fence(1500, 2200, 2700);
+fence(3000, 3700, 2700);
+fence(4100, 4700, 2700);
+
+// ---------- People + animals scattered ----------
+for (let i=0; i<35; i++) person(rand(100, 4700), rand(1500, 2800));
+for (let i=0; i<25; i++) sheep(rand(100, 4700), rand(2300, 2900));
+for (let i=0; i<15; i++) cow(rand(100, 4700), rand(2350, 2900));
+
+// ---------- Mushrooms, rocks ----------
+for (let i=0; i<40; i++) {
+  const x = rand(50, 4750), y = rand(2700, 2950);
+  const g = el('g', {transform:`translate(${x} ${y})`});
+  el('ellipse', {cx:0, cy:0, rx:10, ry:5, fill:'#d33', stroke:'#3a2410','stroke-width':1}, g);
+  el('rect', {x:-4, y:0, width:8, height:12, fill:'#f4ecd8', stroke:'#3a2410','stroke-width':1}, g);
+  el('circle', {cx:-3, cy:-2, r:1.2, fill:'#fff'}, g);
+  el('circle', {cx:3, cy:-1, r:1.2, fill:'#fff'}, g);
+}
+for (let i=0; i<60; i++) {
+  el('ellipse', {cx:rand(50,4750), cy:rand(2700,2950), rx:rand(8,20), ry:rand(4,8), fill:'#8a8275', stroke:'#5a544a','stroke-width':1});
+}
+
+// ============================================================
+// HIDDEN OBJECTS
+// ============================================================
+const items = [];
+
+function hideItem(name, label, where, fn) {
+  items.push({name, label, where});
+  const g = el('g', {class:'hidden', 'data-name':name, 'data-label':label});
+  fn(g);
+}
+
+// PENCIL — green, in tree foliage
+hideItem('pencil','Pencil','in a tree', g => {
+  g.setAttribute('transform','translate(260 1410) rotate(35)');
+  el('rect', {x:0,y:0,width:55,height:6,fill:'#4ca454',stroke:'#2a5a2a','stroke-width':0.4}, g);
+  el('rect', {x:55,y:0,width:8,height:6,fill:'#ffb0b0',stroke:'#2a5a2a','stroke-width':0.4}, g);
+  el('rect', {x:63,y:0,width:3,height:6,fill:'#888'}, g);
+  el('polygon', {points:'0,0 -8,3 0,6',fill:'#e0c084',stroke:'#2a5a2a','stroke-width':0.4}, g);
+  el('polygon', {points:'-8,3 -12,3', stroke:'#222','stroke-width':1.5}, g);
+});
+
+// SAW — on castle wall
+hideItem('saw','Saw','on the castle wall', g => {
+  g.setAttribute('transform','translate(665 870)');
+  el('polygon', {points:'0,0 120,0 117,4 113,0 109,4 105,0 101,4 97,0 93,4 89,0 85,4 81,0 77,4 73,0 69,4 65,0 61,4 57,0 53,4 49,0 45,4 41,0 37,4 33,0 29,4 25,0 21,4 17,0 13,4 9,0 5,4 0,0', fill:'#d8c8a0', stroke:'#8a7a50', 'stroke-width':0.6}, g);
+  el('path', {d:'M120,-1 q18,-2 16,12 q-2,10 -18,8 z', fill:'#a08060', stroke:'#5a4020','stroke-width':0.6}, g);
+});
+
+// ROLLER SKATE — in a foreground bush, color matched
+hideItem('skate','Roller Skate','in a foreground bush', g => {
+  g.setAttribute('transform','translate(1810 2755)');
+  el('path', {d:'M0,0 L0,-22 Q0,-28 6,-28 L24,-28 Q34,-28 36,-22 L44,-4 L44,0 Z', fill:'#3e8e41', stroke:'#1a3a1a','stroke-width':0.8}, g);
+  el('line', {x1:9,y1:-22,x2:22,y2:-18,stroke:'#1a3a1a','stroke-width':0.5}, g);
+  el('line', {x1:9,y1:-16,x2:22,y2:-12,stroke:'#1a3a1a','stroke-width':0.5}, g);
+  el('rect', {x:-2,y:0,width:48,height:4,fill:'#1a3a1a'}, g);
+  el('circle', {cx:4,cy:8,r:5,fill:'#1a3a1a',stroke:'#0a1a0a','stroke-width':0.6}, g);
+  el('circle', {cx:17,cy:8,r:5,fill:'#1a3a1a',stroke:'#0a1a0a','stroke-width':0.6}, g);
+  el('circle', {cx:30,cy:8,r:5,fill:'#1a3a1a',stroke:'#0a1a0a','stroke-width':0.6}, g);
+  el('circle', {cx:41,cy:8,r:5,fill:'#1a3a1a',stroke:'#0a1a0a','stroke-width':0.6}, g);
+});
+
+// BIRD — in left forest
+hideItem('bird','Bird','perched in left forest', g => {
+  g.setAttribute('transform','translate(420 1620)');
+  el('ellipse', {cx:0,cy:0,rx:12,ry:7,fill:'#7a4a2a',stroke:'#3a2410','stroke-width':0.6}, g);
+  el('circle', {cx:-10,cy:-4,r:5,fill:'#7a4a2a',stroke:'#3a2410','stroke-width':0.6}, g);
+  el('polygon', {points:'-14,-4 -19,-3 -14,-2',fill:'#fa3'}, g);
+  el('circle', {cx:-11,cy:-5,r:0.8,fill:'#000'}, g);
+});
+
+// BABY BIRD — tiny, in right forest
+hideItem('babybird','Baby Bird','tiny in right forest', g => {
+  g.setAttribute('transform','translate(4250 1640)');
+  el('ellipse', {cx:0,cy:0,rx:6,ry:4,fill:'#c8a060',stroke:'#7a5a20','stroke-width':0.5}, g);
+  el('circle', {cx:-4,cy:-2,r:3,fill:'#c8a060',stroke:'#7a5a20','stroke-width':0.5}, g);
+  el('polygon', {points:'-6,-2 -9,-1 -6,0',fill:'#e07020'}, g);
+  el('circle', {cx:-5,cy:-3,r:0.5,fill:'#000'}, g);
+});
+
+// FISH — in river
+hideItem('fish','Fish','in the river', g => {
+  g.setAttribute('transform','translate(1700 2160)');
+  el('ellipse', {cx:0,cy:0,rx:18,ry:8,fill:'#5aa8c8',stroke:'#2a6080','stroke-width':0.6}, g);
+  el('polygon', {points:'17,0 28,-8 28,8', fill:'#5aa8c8', stroke:'#2a6080','stroke-width':0.6}, g);
+  el('circle', {cx:-9,cy:-2,r:1.5,fill:'#fff'}, g);
+  el('circle', {cx:-9,cy:-2,r:0.7,fill:'#000'}, g);
+});
+
+// KEY — on castle wall
+hideItem('key','Key','on the castle', g => {
+  g.setAttribute('transform','translate(770 900)');
+  el('circle', {cx:0,cy:0,r:6,fill:'none',stroke:'#a08a60','stroke-width':2.4}, g);
+  el('rect', {x:5,y:-1.6,width:18,height:3.2,fill:'#a08a60'}, g);
+  el('rect', {x:18,y:-1.6,width:2,height:5,fill:'#a08a60'}, g);
+  el('rect', {x:14,y:-1.6,width:2,height:4,fill:'#a08a60'}, g);
+});
+
+// TEACUP — in a village garden
+hideItem('teacup','Teacup','near a village', g => {
+  g.setAttribute('transform','translate(2010 1605)');
+  el('path', {d:'M0,0 L22,0 L19,14 Q11,18 3,14 Z',fill:'#fce8c4',stroke:'#3a2410','stroke-width':0.8}, g);
+  el('ellipse', {cx:11,cy:0,rx:11,ry:2.5,fill:'#7a3a3a'}, g);
+  el('path', {d:'M22,3 q7,2 5,8 q-1,3 -5,2',fill:'none',stroke:'#3a2410','stroke-width':1}, g);
+});
+
+// PAINTBRUSH — on a roof
+hideItem('paintbrush','Paintbrush','on a rooftop', g => {
+  g.setAttribute('transform','translate(2520 1380) rotate(-25)');
+  el('rect', {x:0,y:0,width:5,height:42,fill:'#7a3528',stroke:'#3a2410','stroke-width':0.4}, g);
+  el('rect', {x:-1,y:-9,width:7,height:10,fill:'#9a8275',stroke:'#444','stroke-width':0.4}, g);
+  el('rect', {x:-1,y:-18,width:7,height:9,fill:'#7a3528'}, g);
+});
+
+// BANANA — in a bush
+hideItem('banana','Banana','in a bush', g => {
+  g.setAttribute('transform','translate(2240 2770) rotate(-12)');
+  el('path', {d:'M0,0 Q14,-16 32,-12 Q34,-10 32,-8 Q16,-10 5,4 Q0,4 0,0 Z',fill:'#b0a040',stroke:'#5a4a10','stroke-width':0.5}, g);
+});
+
+// BUTTERFLY — in foliage
+hideItem('butterfly','Butterfly','resting on leaves', g => {
+  g.setAttribute('transform','translate(3850 1660)');
+  el('ellipse', {cx:-6,cy:-3,rx:7,ry:9,fill:'#4ca454',stroke:'#1a3a1a','stroke-width':0.5}, g);
+  el('ellipse', {cx:6,cy:-3,rx:7,ry:9,fill:'#4ca454',stroke:'#1a3a1a','stroke-width':0.5}, g);
+  el('ellipse', {cx:-6,cy:6,rx:6,ry:6,fill:'#3e8e41',stroke:'#1a3a1a','stroke-width':0.5}, g);
+  el('ellipse', {cx:6,cy:6,rx:6,ry:6,fill:'#3e8e41',stroke:'#1a3a1a','stroke-width':0.5}, g);
+  el('ellipse', {cx:0,cy:0,rx:1.2,ry:9,fill:'#1a3a1a'}, g);
+});
+
+// SNAIL — on a stone
+hideItem('snail','Snail','on a rock', g => {
+  g.setAttribute('transform','translate(3200 2820)');
+  el('path', {d:'M0,0 q3,-12 16,-12 q14,0 16,10 q0,7 -12,7 q-7,0 -7,-5 q0,-4 4,-4',fill:'none',stroke:'#5a544a','stroke-width':2.2}, g);
+  el('ellipse', {cx:-7,cy:3,rx:12,ry:5,fill:'#8a8275',stroke:'#5a544a','stroke-width':0.8}, g);
+  el('line', {x1:-15,y1:1,x2:-19,y2:-3,stroke:'#5a544a','stroke-width':1}, g);
+  el('line', {x1:-15,y1:3,x2:-17,y2:7,stroke:'#5a544a','stroke-width':1}, g);
+});
+
+// CROWN — on castle keep
+hideItem('crown','Crown','high up', g => {
+  g.setAttribute('transform','translate(580 750)');
+  el('polygon', {points:'0,10 0,2 6,6 12,0 18,6 24,0 30,6 36,2 36,10', fill:'#d4a017',stroke:'#7a5a10','stroke-width':0.7}, g);
+  el('rect', {x:0,y:10,width:36,height:4,fill:'#d4a017',stroke:'#7a5a10','stroke-width':0.6}, g);
+  el('circle', {cx:6,cy:6,r:1.2,fill:'#d33'}, g);
+  el('circle', {cx:18,cy:3,r:1.2,fill:'#3a8'}, g);
+  el('circle', {cx:30,cy:6,r:1.2,fill:'#33d'}, g);
+});
+
+// ANCHOR — in lake
+hideItem('anchor','Anchor','deep in water', g => {
+  g.setAttribute('transform','translate(800 2400)');
+  el('circle', {cx:0,cy:-12,r:4,fill:'none',stroke:'#2a4a60','stroke-width':1.8}, g);
+  el('line', {x1:0,y1:-8,x2:0,y2:14,stroke:'#2a4a60','stroke-width':2.4}, g);
+  el('line', {x1:-8,y1:-4,x2:8,y2:-4,stroke:'#2a4a60','stroke-width':2}, g);
+  el('path', {d:'M-12,12 q0,8 12,8 q12,0 12,-8',stroke:'#2a4a60','stroke-width':2,fill:'none'}, g);
+});
+
+// RING — in flowers
+hideItem('ring','Ring','among flowers', g => {
+  g.setAttribute('transform','translate(2310 2830)');
+  el('circle', {cx:0,cy:0,r:6,fill:'none',stroke:'#d4a017','stroke-width':2}, g);
+  el('polygon', {points:'-2,-6 2,-6 0,-11',fill:'#aeefff',stroke:'#3a8','stroke-width':0.5}, g);
+});
+
+// MOUSE — by a fence
+hideItem('mouse','Mouse','near a fence', g => {
+  g.setAttribute('transform','translate(330 2755)');
+  el('ellipse', {cx:0,cy:0,rx:11,ry:5,fill:'#9a8e80',stroke:'#5a4a40','stroke-width':0.6}, g);
+  el('circle', {cx:-8,cy:-2,r:4,fill:'#9a8e80',stroke:'#5a4a40','stroke-width':0.6}, g);
+  el('circle', {cx:-10,cy:-5,r:2,fill:'#9a8e80',stroke:'#5a4a40','stroke-width':0.5}, g);
+  el('circle', {cx:-6,cy:-6,r:2,fill:'#9a8e80',stroke:'#5a4a40','stroke-width':0.5}, g);
+  el('circle', {cx:-10,cy:-2,r:0.5,fill:'#000'}, g);
+  el('path', {d:'M9,1 q10,-3 14,3',stroke:'#9a8e80','stroke-width':1.2,fill:'none'}, g);
+});
+
+// HAMMER — in a bush
+hideItem('hammer','Hammer','dropped in a bush', g => {
+  g.setAttribute('transform','translate(3850 2750) rotate(40)');
+  el('rect', {x:0,y:0,width:42,height:5,fill:'#5b3a1e',stroke:'#3a2410','stroke-width':0.4}, g);
+  el('rect', {x:40,y:-7,width:12,height:19,fill:'#444',stroke:'#222','stroke-width':0.5}, g);
+});
+
+// MAGNIFIER — in foreground
+hideItem('magnifier','Magnifying Glass','in foreground bush', g => {
+  g.setAttribute('transform','translate(3030 2755)');
+  el('circle', {cx:0,cy:0,r:11,fill:'none',stroke:'#3a2410','stroke-width':2.2}, g);
+  el('circle', {cx:0,cy:0,r:9,fill:'#cfe6f0',opacity:0.5}, g);
+  el('line', {x1:8,y1:8,x2:18,y2:18,stroke:'#3a2410','stroke-width':3}, g);
+});
+
+// BOOT — among flowers
+hideItem('boot','Boot','among flowers', g => {
+  g.setAttribute('transform','translate(1410 2790)');
+  el('path', {d:'M0,0 L0,-26 Q0,-30 5,-30 L12,-30 Q17,-30 17,-26 L17,-4 L30,-4 Q34,-4 34,0 Z',fill:'#3a2410',stroke:'#1a0a00','stroke-width':0.6}, g);
+  el('rect', {x:0,y:0,width:34,height:4,fill:'#1a0a00'}, g);
+});
+
+// STAR — in field
+hideItem('star','Star','in the garden', g => {
+  g.setAttribute('transform','translate(2620 2780)');
+  el('polygon', {points:'0,-10 3,-3 10,-3 4,2 6,10 0,5 -6,10 -4,2 -10,-3 -3,-3', fill:'#ffd84d',stroke:'#7a5a10','stroke-width':0.6}, g);
+});
+
+// CANDLE — in a window
+hideItem('candle','Candle','in a window', g => {
+  g.setAttribute('transform','translate(2010 1450)');
+  el('rect', {x:0,y:0,width:5,height:14,fill:'#f4ecd8',stroke:'#7a6a40','stroke-width':0.4}, g);
+  el('line', {x1:2.5,y1:0,x2:2.5,y2:-3,stroke:'#000','stroke-width':0.5}, g);
+  el('ellipse', {cx:2.5,cy:-4,rx:1.5,ry:2.5,fill:'#ffaa20'}, g);
+});
+
+// SPOON — on a roof
+hideItem('spoon','Spoon','on a rooftop', g => {
+  g.setAttribute('transform','translate(3210 1410) rotate(25)');
+  el('rect', {x:0,y:0,width:3.5,height:24,fill:'#a8a8b0',stroke:'#666','stroke-width':0.3}, g);
+  el('ellipse', {cx:1.7,cy:-5,rx:5.5,ry:7,fill:'#a8a8b0',stroke:'#666','stroke-width':0.4}, g);
+});
+
+// HAT — on a tree
+hideItem('hat','Hat','perched on a tree', g => {
+  g.setAttribute('transform','translate(620 1480)');
+  el('ellipse', {cx:0,cy:6,rx:18,ry:4,fill:'#3a2410',stroke:'#1a0a00','stroke-width':0.5}, g);
+  el('path', {d:'M-10,6 L-9,-8 Q-9,-12 0,-12 Q9,-12 9,-8 L10,6 Z',fill:'#3a2410',stroke:'#1a0a00','stroke-width':0.5}, g);
+  el('rect', {x:-10,y:3,width:20,height:3,fill:'#d33'}, g);
+});
+
+// UMBRELLA — in lake reflection
+hideItem('umbrella','Umbrella','near water', g => {
+  g.setAttribute('transform','translate(4200 2520)');
+  el('path', {d:'M-20,0 Q-20,-18 0,-18 Q20,-18 20,0 Z',fill:'#d33',stroke:'#7a1a1a','stroke-width':0.6}, g);
+  el('path', {d:'M-20,0 Q-13,-4 -7,0 M-7,0 Q0,-4 7,0 M7,0 Q13,-4 20,0',fill:'none',stroke:'#7a1a1a','stroke-width':0.6}, g);
+  el('line', {x1:0,y1:0,x2:0,y2:18,stroke:'#3a2410','stroke-width':1.5}, g);
+  el('path', {d:'M0,18 q3,3 6,0',fill:'none',stroke:'#3a2410','stroke-width':1.5}, g);
+});
+
+// SOCK — on fence
+hideItem('sock','Sock','on a fence', g => {
+  g.setAttribute('transform','translate(3220 2720)');
+  el('path', {d:'M0,0 L0,-18 L9,-18 L9,-6 Q9,-2 14,-2 L20,-2 Q23,-2 23,2 L0,2 Z',fill:'#3a8',stroke:'#1a4a4a','stroke-width':0.6}, g);
+  el('rect', {x:0,y:-18,width:9,height:4,fill:'#1a4a4a'}, g);
+});
+
+// GLOVE — in flowers
+hideItem('glove','Glove','among flowers', g => {
+  g.setAttribute('transform','translate(2700 2820) rotate(-20)');
+  el('path', {d:'M0,0 L0,-14 L4,-14 L4,-20 L7,-20 L7,-14 L10,-14 L10,-22 L13,-22 L13,-14 L16,-14 L16,-18 L19,-18 L19,-12 L22,-12 L22,2 L0,2 Z',fill:'#fce8c4',stroke:'#3a2410','stroke-width':0.6}, g);
+});
+
+// ICE CREAM CONE — in a tree
+hideItem('icecream','Ice Cream','high in a tree', g => {
+  g.setAttribute('transform','translate(4500 1620)');
+  el('polygon', {points:'-5,0 5,0 0,12',fill:'#c89060',stroke:'#5a3010','stroke-width':0.5}, g);
+  el('path', {d:'M-7,-3 Q-7,-12 0,-12 Q7,-12 7,-3 Z',fill:'#fce8c4',stroke:'#7a5a30','stroke-width':0.5}, g);
+  el('circle', {cx:0,cy:-13,r:3,fill:'#ff8aa0',stroke:'#7a5a30','stroke-width':0.5}, g);
+});
+
+// LEAF — in path
+hideItem('leaf','Leaf','near the path', g => {
+  g.setAttribute('transform','translate(1100 2820) rotate(35)');
+  el('path', {d:'M0,0 Q14,-10 0,-22 Q-14,-10 0,0 Z',fill:'#7a5a3a',stroke:'#3a2410','stroke-width':0.5}, g);
+  el('line', {x1:0,y1:0,x2:0,y2:-22,stroke:'#3a2410','stroke-width':0.6}, g);
+});
+
+// MUSHROOM (hidden one, distinct color) — among bushes
+hideItem('shroom','Special Mushroom','in a bush', g => {
+  g.setAttribute('transform','translate(810 2790)');
+  el('ellipse', {cx:0,cy:0,rx:11,ry:5,fill:'#a86bff',stroke:'#3a2410','stroke-width':0.8}, g);
+  el('rect', {x:-4,y:0,width:8,height:13,fill:'#f4ecd8',stroke:'#3a2410','stroke-width':0.8}, g);
+  el('circle', {cx:-3,cy:-2,r:1.2,fill:'#fff'}, g);
+  el('circle', {cx:3,cy:-1,r:1.2,fill:'#fff'}, g);
+});
+
+// TOOTHBRUSH — on a roof
+hideItem('toothbrush','Toothbrush','on a rooftop', g => {
+  g.setAttribute('transform','translate(1430 1400) rotate(15)');
+  el('rect', {x:0,y:0,width:5,height:32,fill:'#3a8',stroke:'#1a4a4a','stroke-width':0.4}, g);
+  el('rect', {x:-1,y:-7,width:7,height:8,fill:'#f4ecd8',stroke:'#1a4a4a','stroke-width':0.3}, g);
+  for (let i=-0.5; i<6; i+=1.5) el('line', {x1:i,y1:-7,x2:i,y2:-10,stroke:'#1a4a4a','stroke-width':0.5}, g);
+});
+
+// HEART — in a window
+hideItem('heart','Heart','in a window', g => {
+  g.setAttribute('transform','translate(3510 1450)');
+  el('path', {d:'M0,8 C-8,2 -8,-4 -4,-4 C-2,-4 0,-2 0,0 C0,-2 2,-4 4,-4 C8,-4 8,2 0,8 Z', fill:'#d33',stroke:'#7a1a1a','stroke-width':0.5}, g);
+});
+
+// MOON — hidden among clouds
+hideItem('moon','Crescent Moon','among the clouds', g => {
+  g.setAttribute('transform','translate(2400 200)');
+  el('path', {d:'M0,0 a14,14 0 1,0 7,26 a11,11 0 1,1 -7,-26 Z',fill:'#f4ecd8',stroke:'#a89a60','stroke-width':1}, g);
+});
+
+// ARROW — in field
+hideItem('arrow','Arrow','in a field', g => {
+  g.setAttribute('transform','translate(280 2440) rotate(-15)');
+  el('line', {x1:0,y1:0,x2:50,y2:0,stroke:'#7a5a3a','stroke-width':2}, g);
+  el('polygon', {points:'50,0 44,-4 44,4',fill:'#7a5a3a'}, g);
+  el('path', {d:'M0,0 L-6,-3 L-6,3 Z',fill:'#7a5a3a'}, g);
+  el('line', {x1:-1,y1:-3,x2:-1,y2:3,stroke:'#fff','stroke-width':0.8}, g);
+});
+
+// COMB — on a roof
+hideItem('comb','Comb','on a rooftop', g => {
+  g.setAttribute('transform','translate(2950 1395) rotate(-20)');
+  el('rect', {x:0,y:0,width:34,height:6,fill:'#7a3528',stroke:'#3a2410','stroke-width':0.4}, g);
+  for (let i=2; i<34; i+=2) el('line', {x1:i,y1:6,x2:i,y2:12,stroke:'#7a3528','stroke-width':0.7}, g);
+});
+
+// FORK — on a roof
+hideItem('fork','Fork','on a rooftop', g => {
+  g.setAttribute('transform','translate(1750 1390) rotate(10)');
+  el('rect', {x:0,y:0,width:3.5,height:22,fill:'#a8a8b0',stroke:'#666','stroke-width':0.3}, g);
+  el('rect', {x:-2,y:-10,width:1.5,height:10,fill:'#a8a8b0',stroke:'#666','stroke-width':0.3}, g);
+  el('rect', {x:0.5,y:-10,width:1.5,height:10,fill:'#a8a8b0',stroke:'#666','stroke-width':0.3}, g);
+  el('rect', {x:3,y:-10,width:1.5,height:10,fill:'#a8a8b0',stroke:'#666','stroke-width':0.3}, g);
+  el('rect', {x:5.5,y:-10,width:1.5,height:10,fill:'#a8a8b0',stroke:'#666','stroke-width':0.3}, g);
+});
+
+// CARROT — in a field
+hideItem('carrot','Carrot','in a field', g => {
+  g.setAttribute('transform','translate(3850 2440)');
+  el('polygon', {points:'0,0 14,0 7,28',fill:'#fa3',stroke:'#a85010','stroke-width':0.5}, g);
+  el('path', {d:'M2,0 L0,-10 M7,0 L7,-12 M12,0 L14,-10', stroke:'#3a8','stroke-width':1.5,fill:'none'}, g);
+});
+
+// PIZZA SLICE — among houses
+hideItem('pizza','Pizza Slice','near a house', g => {
+  g.setAttribute('transform','translate(3050 1540)');
+  el('polygon', {points:'0,0 24,0 12,22',fill:'#f4d48a',stroke:'#7a5020','stroke-width':0.6}, g);
+  el('polygon', {points:'0,0 24,0 22,3 2,3',fill:'#a14b3a',stroke:'#5a2010','stroke-width':0.4}, g);
+  el('circle', {cx:8,cy:8,r:1.5,fill:'#d33'}, g);
+  el('circle', {cx:14,cy:11,r:1.5,fill:'#d33'}, g);
+  el('circle', {cx:10,cy:14,r:1.5,fill:'#d33'}, g);
+});
+
+// SEND TOTAL TO UI ============================
+document.getElementById('total-n').textContent = items.length;
+
+// Build status bar
+const status = document.getElementById('status');
+items.forEach(it => {
+  const span = document.createElement('span');
+  span.className = 'item';
+  span.id = 's-' + it.name;
+  span.textContent = it.label;
+  status.appendChild(span);
+});
+
+const toast = document.getElementById('toast');
+const win = document.getElementById('win');
+const foundN = document.getElementById('found-n');
+let foundCount = 0;
+const total = items.length;
+
+function showToast(msg) {
+  toast.textContent = msg;
+  toast.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toast.classList.remove('show'), 1800);
+}
+
+function bindHidden() {
+  document.querySelectorAll('.hidden').forEach(el => {
+    if (el._bound) return;
+    el._bound = true;
+    el.addEventListener('click', () => {
+      if (el.classList.contains('found')) return;
+      el.classList.add('found');
+      const tag = document.getElementById('s-' + el.dataset.name);
+      if (tag) tag.classList.add('found');
+      foundCount++;
+      foundN.textContent = foundCount;
+      showToast('You found the ' + el.dataset.label + '!');
+      if (foundCount === total) win.textContent = '🏆 You found all ' + total + '! Magnificent!';
+    });
+  });
+}
+bindHidden();
+
+document.getElementById('hint').addEventListener('click', () => {
+  const remaining = items.filter(it => !document.getElementById('s-' + it.name).classList.contains('found'));
+  if (!remaining.length) { showToast('Nothing left to find!'); return; }
+  const pick = remaining[Math.floor(Math.random() * remaining.length)];
+  showToast('Hint: the ' + pick.label + ' is ' + pick.where + '.');
+});
+document.getElementById('peek').addEventListener('click', () => {
+  const svg = document.getElementById('scene');
+  svg.classList.add('peek');
+  setTimeout(() => svg.classList.remove('peek'), 3000);
+});
+document.getElementById('reset').addEventListener('click', () => {
+  document.querySelectorAll('.hidden.found').forEach(el => el.classList.remove('found'));
+  document.querySelectorAll('#status .found').forEach(el => el.classList.remove('found'));
+  foundCount = 0; foundN.textContent = 0; win.textContent = '';
+});
+</script>
+</body>
+</html>
