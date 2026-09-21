@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#7ec8ff">
+<title>PENNY — Coins, Clocks &amp; Critters</title>
+<style>
+  :root{ --gold:#ffcf4a; --pink:#ff7fb0; --teal:#4fe0c8; --ink:#0a0e1a; }
+  *{ box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html,body{ height:100%; background:#0b1024; overflow:hidden;
+    font-family:"Trebuchet MS",system-ui,sans-serif; color:#fff; }
+  #game{ position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  canvas{ background:#7ec8ff; max-width:100%; max-height:100%; image-rendering:auto; }
+  .screen{ position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; gap:16px;
+    background:radial-gradient(ellipse at 50% 32%,#2b3a75 0%,#0b1024 72%); }
+  .hidden{ display:none !important; }
+  h1{ font-size:clamp(40px,9vw,96px); letter-spacing:5px; color:var(--gold);
+    text-shadow:0 0 20px #ff8a00, 0 5px 0 #7a3b00; }
+  .sub{ font-size:clamp(13px,2vw,20px); color:#bcd4ff; max-width:720px;
+    line-height:1.6; padding:0 20px; }
+  .btn{ font:inherit; font-size:clamp(15px,2.2vw,22px); font-weight:bold;
+    padding:13px 30px; border:none; border-radius:12px; cursor:pointer;
+    background:linear-gradient(#ffd24a,#e8860a); color:#3a1c00;
+    box-shadow:0 5px 0 #8a4a00, 0 0 22px rgba(255,160,0,.45); transition:transform .08s; }
+  .btn:hover{ transform:translateY(-2px); }
+  .btn:active{ transform:translateY(3px); box-shadow:0 2px 0 #8a4a00; }
+  .btn.sel{ outline:3px solid #52ff9b; box-shadow:0 5px 0 #8a4a00, 0 0 24px #52ff9b; }
+  .row{ display:flex; gap:14px; flex-wrap:wrap; justify-content:center; }
+  .keys{ font-size:clamp(11px,1.6vw,15px); color:#9fb6e0; line-height:1.8; }
+  .keys b{ color:#ffe9a8; }
+  .legend{ display:flex; gap:22px; flex-wrap:wrap; justify-content:center;
+    font-size:clamp(12px,1.7vw,16px); color:#dce8ff; }
+  .legend span{ display:flex; align-items:center; gap:7px; }
+  .big{ font-size:clamp(26px,5vw,54px); color:#fff; text-shadow:0 3px 0 #000; }
+  .score{ font-size:clamp(16px,2.6vw,26px); color:var(--gold); }
+</style>
+</head>
+<body>
+<div id="game">
+  <canvas id="cv" width="960" height="540"></canvas>
+
+  <!-- TITLE -->
+  <div id="scrTitle" class="screen">
+    <h1>PENNY</h1>
+    <div class="sub">Run, jump, and bonk the <b style="color:#ffd24a">coins</b> floating in the sky.
+      Every penny puts a heart back, and so does stomping a monster.
+      Sky <b style="color:#9fe8ff">clocks</b> are rare — every one you hit buys you more time.
+      Watch out: the monsters bite, and they jump around.</div>
+    <div class="legend">
+      <span><canvas class="ic" data-ic="coin" width="34" height="34"></canvas> Penny +10 &amp; a &#9829;</span>
+      <span><canvas class="ic" data-ic="clock" width="34" height="34"></canvas> Clock +12s</span>
+      <span><canvas class="ic" data-ic="mon" width="34" height="34"></canvas> Stomp it! +50 &amp; a &#9829;</span>
+    </div>
+    <div class="row">
+      <button class="btn sel" id="btn1p">1 PLAYER</button>
+      <button class="btn" id="btn2p">2 PLAYERS</button>
+    </div>
+    <div class="keys">
+      <b>Penny</b> — A / D run &nbsp;·&nbsp; W or SPACE jump<br>
+      <b>Copper</b> — ← / → run &nbsp;·&nbsp; ↑ jump<br>
+      ENTER pauses &nbsp;·&nbsp; controller &amp; on-screen pad supported
+    </div>
+  </div>
+
+  <!-- LEVEL COMPLETE -->
+  <div id="scrLevel" class="screen hidden">
+    <div class="big" id="lvlTitle">LEVEL CLEAR!</div>
+    <div class="score" id="lvlBody"></div>
+    <button class="btn" id="btnNext">NEXT LEVEL</button>
+  </div>
+
+  <!-- GAME OVER -->
+  <div id="scrOver" class="screen hidden">
+    <div class="big" style="color:#ff8a8a">TIME'S UP!</div>
+    <div class="score" id="overBody"></div>
+    <button class="btn" id="btnAgain">PLAY AGAIN</button>
+  </div>
+
+  <!-- PAUSE -->
+  <div id="scrPause" class="screen hidden">
+    <div class="big">PAUSED</div>
+    <div class="keys">Press ENTER to keep running</div>
+    <button class="btn" id="btnResume">RESUME</button>
+  </div>
+</div>
+
+<script src="gamepad.js"></script>
+<script>
+/* =========================================================================
+   PENNY — a run-and-jump for one or two players.  Coins and clocks float in
+   the sky and you have to jump up and hit them.  Clocks are rare; each one
+   buys you more time.  Monsters bite and hop around — most of the world has
+   only a few, but a couple of stretches are absolutely crawling with them.
+   ========================================================================= */
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+
+/* ---- tuning ------------------------------------------------------------ */
+const GRAVITY   = 0.62;
+const MAX_FALL  = 15;
+const P_ACC     = 0.78;
+const P_MAX     = 4.5;
+const P_FRIC    = 0.80;
+const JUMP_V    = -13.4;     // ~145px of lift: every pickup stays reachable
+const COYOTE    = 12;        // frames of grace after walking off a ledge
+const BUFFER    = 12;        // frames a jump press stays "remembered"
+const GROUND_Y  = 430;       // top of the normal ground
+const CLOCK_SEC = 15;
+const HIT_SEC   = 1;         // seconds burned by a bite
+const DOWN_SEC  = 4;         // seconds burned by losing all your hearts
+const MAX_HP    = 3;
+
+/* ---- state ------------------------------------------------------------- */
+let state = 'title';         // title | play | paused | level | over
+let numPlayers = 1;
+let level = 1;
+let timeLeft = 0;
+let players = [], platforms = [], coins = [], clocks = [], monsters = [], parts = [], floats = [];
+let checkpoints = [], flag = null, worldW = 0, camX = 0, shake = 0, tick = 0;
+
+/* ---- audio (tiny beeps, built on first use) ---------------------------- */
+let AC = null;
+function beep(freq, dur, type, vol){
+  try{
+    if(!AC) AC = new (window.AudioContext||window.webkitAudioContext)();
+    const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type||'square'; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol||0.06, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + dur);
+    o.connect(g); g.connect(AC.destination);
+    o.start(); o.stop(AC.currentTime + dur);
+  }catch(e){}
+}
+const sfx = {
+  jump : ()=> beep(520, .10, 'square', .045),
+  coin : ()=>{ beep(880,.07,'square',.05); setTimeout(()=>beep(1320,.10,'square',.05),60); },
+  clock: ()=>{ beep(660,.09,'triangle',.08); setTimeout(()=>beep(990,.09,'triangle',.08),80);
+               setTimeout(()=>beep(1480,.16,'triangle',.08),160); },
+  stomp: ()=> beep(180, .14, 'sawtooth', .07),
+  hurt : ()=>{ beep(200,.18,'sawtooth',.08); setTimeout(()=>beep(120,.22,'sawtooth',.07),90); },
+  flag : ()=>{ [523,659,784,1046].forEach((f,i)=> setTimeout(()=>beep(f,.16,'triangle',.07), i*110)); }
+};
+
+/* ---- input ------------------------------------------------------------- */
+const keys = {};
+const JUMP1 = ['KeyW','Space'], JUMP2 = ['ArrowUp','Period'];
+addEventListener('keydown', e => {
+  if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].indexOf(e.code) >= 0) e.preventDefault();
+  if(!keys[e.code]) onPress(e.code);
+  keys[e.code] = true;
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+
+function onPress(code){
+  const isJump = JUMP1.indexOf(code)>=0 || JUMP2.indexOf(code)>=0;
+  if(state === 'title'){
+    if(code==='ArrowLeft'||code==='KeyA') selectPlayers(1);
+    else if(code==='ArrowRight'||code==='KeyD') selectPlayers(2);
+    else if(code==='Enter' || isJump) startGame(numPlayers);
+  } else if(state === 'play'){
+    if(code==='Enter'||code==='Escape') setPaused(true);
+    if(JUMP1.indexOf(code)>=0 && players[0]) players[0].jumpBuf = BUFFER;
+    if(JUMP2.indexOf(code)>=0 && players[1]) players[1].jumpBuf = BUFFER;
+  } else if(state === 'paused'){
+    if(code==='Enter'||code==='Escape'||isJump) setPaused(false);
+  } else if(state === 'level'){
+    if(code==='Enter'||isJump) nextLevel();
+  } else if(state === 'over'){
+    if(code==='Enter'||isJump) showTitle();
+  }
+}
+const held = list => list.some(k => keys[k]);
+
+/* =========================================================================
+   LEVEL BUILDING — zones stitched left to right.  Each one lays down its own
+   ground, platforms, pickups and monsters, then reports how wide it was.
+   ========================================================================= */
+const rnd = (a,b) => a + Math.random()*(b-a);
+const ri  = (a,b) => Math.floor(rnd(a, b+1));
+
+function addPlat(x,y,w,h){ platforms.push({x,y,w,h,kind:'plat'}); }
+function addGround(x,w){ platforms.push({x, y:GROUND_Y, w, h:H-GROUND_Y+80, kind:'ground'}); }
+function addCoin(x,y){ coins.push({x,y,r:11,taken:false,ph:Math.random()*6.28}); }
+function addClock(x,y){ clocks.push({x,y,r:18,taken:false,ph:Math.random()*6.28}); }
+function addMonster(x,y,type,homeX,homeW){
+  monsters.push({
+    x, y, w:30, h:26, vx:(Math.random()<.5?-1:1)*(0.8 + level*0.07), vy:0,
+    type,                              // 'crawler' bites, 'hopper' jumps around
+    homeX, homeW,                      // patrol bounds
+    onGround:false, dead:false, bite:0, hop:20+Math.random()*70, wob:Math.random()*6.28
+  });
+}
+
+/* gentle run with an arc of coins sailing overhead */
+function zoneCoins(x){
+  const w = 900;
+  addGround(x, w);
+  const py = GROUND_Y - 110;
+  addPlat(x+220, py, 130, 18);
+  addPlat(x+560, py-55, 130, 18);
+  const n = ri(5,7);
+  for(let i=0;i<n;i++){
+    const t = n>1 ? i/(n-1) : .5;
+    addCoin(x+340 + t*260, GROUND_Y - 80 - Math.sin(t*Math.PI)*65);
+  }
+  addCoin(x+285, py-44);
+  addCoin(x+625, py-99);
+  addMonster(x+430, GROUND_Y-26, 'crawler', x+330, 340);
+  addMonster(x+740, GROUND_Y-26, 'crawler', x+660, 200);
+  return w;
+}
+
+/* a staircase climbing up to one rare clock */
+function zoneClock(x){
+  const w = 820;
+  addGround(x, w);
+  const steps = [[x+180, GROUND_Y-95],[x+360, GROUND_Y-165],[x+540, GROUND_Y-235]];
+  for(let i=0;i<steps.length;i++) addPlat(steps[i][0], steps[i][1], 120, 18);
+  addClock(steps[2][0]+60, steps[2][1]-88);   // the prize, floating over the top step
+  addCoin(steps[0][0]+60, steps[0][1]-46);
+  addCoin(steps[1][0]+60, steps[1][1]-46);
+  addMonster(x+700, GROUND_Y-26, 'crawler', x+620, 170);  // clocks are calm on purpose
+  return w;
+}
+
+/* the swarm: tons of monsters, a couple of islands to escape onto */
+function zoneSwarm(x){
+  const w = 1020;
+  addGround(x, w);
+  addPlat(x+250, GROUND_Y-120, 150, 18);
+  addPlat(x+620, GROUND_Y-150, 150, 18);
+  const n = 5 + Math.min(3, level);
+  for(let i=0;i<n;i++){
+    addMonster(x + 170 + i*(720/n) + rnd(-22,22), GROUND_Y-26,
+               Math.random()<0.45 ? 'hopper' : 'crawler', x+60, w-120);
+  }
+  addCoin(x+325, GROUND_Y-162);
+  addCoin(x+695, GROUND_Y-192);
+  return w;
+}
+
+/* a pit to hop across on floating platforms */
+function zoneGap(x){
+  const pit = 200 + level*8;
+  addGround(x, 260);
+  addPlat(x+300, GROUND_Y-70, 110, 18);
+  addPlat(x+480, GROUND_Y-120, 110, 18);
+  addGround(x + 260 + pit + 190, 340);
+  for(let i=0;i<4;i++) addCoin(x+325+i*70, GROUND_Y-180 - Math.sin(i/3*Math.PI)*55);
+  // keep the stepping stones clear — a bite over the pit is a cheap death
+  const far = x + 260 + pit + 190;
+  addMonster(far+150, GROUND_Y-26, 'hopper', far+60, 240);
+  return 260 + pit + 190 + 340;
+}
+
+function zoneStart(x){ const w = 520; addGround(x, w); addCoin(x+340, GROUND_Y-75); return w; }
+
+function zoneFinish(x){
+  const w = 560;
+  addGround(x, w);
+  flag = { x: x+340, y: GROUND_Y-130, w:12, h:130 };
+  addCoin(x+180, GROUND_Y-85);
+  addCoin(x+240, GROUND_Y-115);
+  return w;
+}
+
+const ZONES = { coins: zoneCoins, clock: zoneClock, swarm: zoneSwarm, gap: zoneGap };
+
+function buildLevel(){
+  platforms = []; coins = []; clocks = []; monsters = []; parts = []; floats = [];
+  checkpoints = []; flag = null;
+  let x = 0;
+  checkpoints.push(80);
+  x += zoneStart(x);
+  const bag = ['coins','gap','clock','swarm','coins','clock','gap','swarm'];
+  const count = Math.min(12, 7 + (level-1)*2);
+  for(let i=0;i<count;i++){
+    addGround(x, 70); x += 70;            // short bridge between zones
+    checkpoints.push(x + 70);
+    x += ZONES[bag[i % bag.length]](x);
+  }
+  addGround(x, 70); x += 70;
+  checkpoints.push(x + 70);
+  x += zoneFinish(x);
+  worldW = x;
+}
+
+/* =========================================================================
+   PLAYERS
+   ========================================================================= */
+function makePlayer(i){
+  return {
+    idx:i, name: i===0 ? 'PENNY' : 'COPPER',
+    color: i===0 ? '#ff6fa8' : '#3fd0c0',
+    hair:  i===0 ? '#5a2b12' : '#1d3b6b',
+    x: 120 + i*70, y: GROUND_Y-40, w:24, h:36,
+    vx:0, vy:0, face:1, onGround:false, coyote:0, jumpBuf:0, jumpHold:false,
+    hp:MAX_HP, inv:0, score:0, coinsGot:0, clocksGot:0, run:0, cp:{x:120+i*70, y:GROUND_Y-40},
+    done:false
+  };
+}
+
+function startGame(n){
+  numPlayers = n; level = 1;
+  players = []; for(let i=0;i<n;i++) players.push(makePlayer(i));
+  startLevel();
+}
+function startLevel(){
+  buildLevel();
+  timeLeft = Math.max(65, 95 - (level-1)*4) + (players.length-1)*12;
+  for(const p of players){
+    p.x = 120 + p.idx*70; p.y = GROUND_Y-40; p.vx=0; p.vy=0;
+    p.hp=MAX_HP; p.inv=60; p.done=false; p.cp={x:p.x,y:p.y};
+  }
+  camX = 0; shake = 0;
+  hideScreens(); state = 'play';
+}
+function nextLevel(){ level++; startLevel(); }
+
+/* =========================================================================
+   COLLISION HELPERS
+   ========================================================================= */
+function overlaps(a, b){
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+// Move a box along one axis and push it back out of anything solid it lands
+// in.  Returns true if it actually hit something.
+function moveAxis(b, dx, dy){
+  b.x += dx; b.y += dy;
+  let hit = false;
+  for(const s of platforms){
+    if(!(b.x < s.x+s.w && b.x+b.w > s.x && b.y < s.y+s.h && b.y+b.h > s.y)) continue;
+    hit = true;
+    if(dx > 0){ b.x = s.x - b.w; b.vx = 0; }
+    else if(dx < 0){ b.x = s.x + s.w; b.vx = 0; }
+    else if(dy > 0){ b.y = s.y - b.h; b.vy = 0; b.onGround = true; }
+    else if(dy < 0){ b.y = s.y + s.h; b.vy = 0; }
+  }
+  return hit;
+}
+
+// Nearest spot on solid ground at (or beside) x — used when respawning.
+function safeSpawn(x){
+  let best = null, bd = 1e9;
+  for(const s of platforms){
+    if(s.kind !== 'ground') continue;
+    if(x >= s.x+24 && x <= s.x+s.w-24) return { x, y: s.y-60 };
+    const cx = Math.max(s.x+24, Math.min(x, s.x+s.w-24));
+    const d = Math.abs(cx - x);
+    if(d < bd){ bd = d; best = { x: cx, y: s.y-60 }; }
+  }
+  return best || { x, y: GROUND_Y-60 };
+}
+
+/* =========================================================================
+   UPDATE
+   ========================================================================= */
+function update(){
+  tick++;
+  if(shake > 0) shake *= 0.88;
+
+  timeLeft -= 1/60;
+  if(timeLeft <= 0){ timeLeft = 0; return gameOver(); }
+
+  for(const p of players) updatePlayer(p);
+  updateMonsters();
+  updatePickups();
+  updateCamera();
+  updateParticles();
+
+  // whoever gets to the flag first clears it for the team
+  if(flag && players.some(p => p.done)) return levelClear();
+}
+
+function updatePlayer(p){
+  if(p.done){ p.vx *= 0.8; return; }
+  const L = p.idx===0 ? ['KeyA'] : ['ArrowLeft'];
+  const R = p.idx===0 ? ['KeyD'] : ['ArrowRight'];
+  const J = p.idx===0 ? JUMP1 : JUMP2;
+
+  if(held(L)){ p.vx -= P_ACC; p.face = -1; }
+  if(held(R)){ p.vx += P_ACC; p.face =  1; }
+  if(!held(L) && !held(R)) p.vx *= P_FRIC;
+  p.vx = Math.max(-P_MAX, Math.min(P_MAX, p.vx));
+
+  // jump: coyote time + a buffered press make it forgiving for small hands
+  if(p.coyote > 0) p.coyote--;
+  if(p.jumpBuf > 0) p.jumpBuf--;
+  if(p.jumpBuf > 0 && p.coyote > 0){
+    p.vy = JUMP_V; p.jumpBuf = 0; p.coyote = 0; p.onGround = false; p.jumpHold = true;
+    puff(p.x+p.w/2, p.y+p.h, '#ffffff', 5);
+    sfx.jump();
+  }
+  // a tap still gets you a proper hop — only a very early release trims it
+  if(p.jumpHold && !held(J)){ p.jumpHold = false; if(p.vy < -10) p.vy = -10; }
+
+  p.vy = Math.min(MAX_FALL, p.vy + GRAVITY);
+  p.onGround = false;
+  moveAxis(p, p.vx, 0);
+  moveAxis(p, 0, p.vy);
+  if(p.onGround){ p.coyote = COYOTE; p.jumpHold = p.jumpHold && p.vy < 0; }
+
+  // stay on screen (two players share one camera)
+  if(p.x < camX + 4){ p.x = camX + 4; if(p.vx<0) p.vx = 0; }
+  if(p.x + p.w > camX + W - 4){ p.x = camX + W - 4 - p.w; if(p.vx>0) p.vx = 0; }
+  p.x = Math.max(0, Math.min(worldW - p.w, p.x));
+
+  if(p.inv > 0) p.inv--;
+  p.run = p.onGround ? p.run + Math.abs(p.vx)*0.16 : p.run;
+
+  // remember the last checkpoint we ran past
+  for(const c of checkpoints) if(p.x > c && c > p.cp.x) p.cp = {x:c, y:GROUND_Y-60};
+
+  if(p.y > H + 60) downed(p, true);      // fell in a pit
+
+  if(flag && !p.done && p.x + p.w > flag.x - 6 && p.x < flag.x + flag.w + 6 && p.y + p.h > flag.y){
+    p.done = true; p.score += 100; sfx.flag();
+    floatText(p.x, p.y-10, 'GOAL!', '#ffe680');
+  }
+}
+
+// A penny or a squashed monster patches you back up.
+function heal(p, x, y){
+  if(p.hp >= MAX_HP) return;
+  p.hp++;
+  floatText(x, y-26, '+1 ♥', '#ff9ec2');
+  puff(x, y-10, '#ff9ec2', 6);
+  beep(700, .10, 'triangle', .06);
+  setTimeout(()=> beep(1050, .12, 'triangle', .06), 90);
+}
+
+function hurt(p, fromX){
+  if(p.inv > 0 || p.done) return;
+  p.hp--; p.inv = 100; p.vy = -6.2;
+  p.vx = (p.x + p.w/2 < fromX ? -1 : 1) * 5.5;
+  timeLeft = Math.max(0, timeLeft - HIT_SEC);
+  floatText(p.x, p.y-8, '-' + HIT_SEC + 's', '#ff9090');
+  shake = 9; sfx.hurt();
+  if(typeof gamepadRumble === 'function') gamepadRumble(p.idx, .6, .4, 180);
+  if(p.hp <= 0) downed(p, false);
+}
+
+function downed(p, fell){
+  timeLeft = Math.max(0, timeLeft - DOWN_SEC);
+  floatText(p.cp.x, GROUND_Y-120, '-' + DOWN_SEC + 's', '#ff9090');
+  p.hp = MAX_HP; p.inv = 110; p.vx = 0; p.vy = 0;
+  const sp = safeSpawn(Math.max(p.cp.x, camX + 40));
+  p.x = sp.x; p.y = sp.y;
+  if(fell) sfx.hurt();
+  if(timeLeft <= 0) gameOver();
+}
+
+/* ---- monsters ---------------------------------------------------------- */
+function updateMonsters(){
+  for(const m of monsters){
+    if(m.dead) continue;
+    if(m.x < camX - 260 || m.x > camX + W + 320) continue;   // sleep off-screen
+    m.wob += 0.12;
+
+    // find the nearest live player
+    let target = null, best = 1e9;
+    for(const p of players){
+      if(p.done) continue;
+      const d = Math.abs((p.x+p.w/2) - (m.x+m.w/2));
+      if(d < best){ best = d; target = p; }
+    }
+
+    if(m.type === 'hopper'){
+      if(m.onGround){
+        m.hop--;
+        if(m.hop <= 0){
+          m.vy = -9.5 - Math.random()*2;
+          m.vx = (target && best < 300 ? Math.sign((target.x - m.x) || 1) : (Math.random()<.5?-1:1))
+                 * (1.2 + level*0.08);
+          m.hop = 40 + Math.random()*50;
+        } else { m.vx *= 0.86; }
+      }
+    } else {  // crawler: patrols, then lunges with its mouth open
+      if(m.bite > 0){ m.bite--; }
+      else if(target && best < 100 && Math.abs(target.y - m.y) < 46){
+        m.bite = 30;
+        m.vx = Math.sign((target.x - m.x) || 1) * (2.5 + level*0.1);
+      } else if(Math.abs(m.vx) < 0.5){
+        m.vx = (Math.random()<.5?-1:1) * (0.8 + level*0.07);
+      } else {
+        const spd = 0.8 + level*0.07;
+        m.vx = Math.sign(m.vx) * spd;
+      }
+    }
+
+    m.vy = Math.min(MAX_FALL, m.vy + GRAVITY);
+    const wasGround = m.onGround;
+    m.onGround = false;
+    const dir = Math.sign(m.vx) || 1;
+    if(moveAxis(m, m.vx, 0)) m.vx = -dir * (0.8 + level*0.07);  // bumped a wall
+    moveAxis(m, 0, m.vy);
+
+    // turn around at the edge of the patrol area, and at ledges
+    if(m.x < m.homeX){ m.x = m.homeX; m.vx = Math.abs(m.vx); }
+    if(m.x + m.w > m.homeX + m.homeW){ m.x = m.homeX + m.homeW - m.w; m.vx = -Math.abs(m.vx); }
+    if(m.onGround && m.type === 'crawler' && m.bite <= 0){
+      const probeX = m.vx > 0 ? m.x + m.w + 4 : m.x - 4;
+      if(!solidAt(probeX, m.y + m.h + 6)) m.vx = -m.vx;
+    }
+    if(m.y > H + 80) m.dead = true;
+    if(m.onGround && !wasGround && m.type === 'hopper') puff(m.x+m.w/2, m.y+m.h, '#caa3ff', 3);
+
+    // player contact: a falling player stomps it, anything else is a bite
+    for(const p of players){
+      if(p.done) continue;
+      if(!overlaps(p, m)) continue;
+      if(p.vy > 1.5 && (p.y + p.h) - m.y < 22){
+        m.dead = true; p.vy = -9.4; p.score += 50;
+        puff(m.x+m.w/2, m.y+m.h/2, '#a45cff', 12);
+        floatText(m.x, m.y-6, '+50', '#d7b6ff');
+        shake = 5; sfx.stomp();
+        heal(p, m.x + m.w/2, m.y);
+      } else {
+        hurt(p, m.x + m.w/2);
+      }
+    }
+  }
+}
+
+function solidAt(x, y){
+  for(const s of platforms)
+    if(x >= s.x && x <= s.x+s.w && y >= s.y && y <= s.y+s.h) return true;
+  return false;
+}
+
+/* ---- coins & clocks ---------------------------------------------------- */
+function updatePickups(){
+  for(const c of coins){
+    if(c.taken) continue;
+    for(const p of players){
+      if(p.done) continue;
+      if(circleHitsBox(c, p)){
+        c.taken = true; p.score += 10; p.coinsGot++;
+        puff(c.x, c.y, '#ffd24a', 8);
+        floatText(c.x-8, c.y-10, '+10', '#ffe680');
+        sfx.coin();
+        heal(p, c.x, c.y);
+        break;
+      }
+    }
+  }
+  for(const k of clocks){
+    if(k.taken) continue;
+    for(const p of players){
+      if(p.done) continue;
+      if(circleHitsBox(k, p)){
+        k.taken = true; p.clocksGot++; p.score += 25;
+        timeLeft += CLOCK_SEC;
+        puff(k.x, k.y, '#9fe8ff', 18);
+        floatText(k.x-22, k.y-16, '+' + CLOCK_SEC + ' SEC', '#9fe8ff');
+        sfx.clock();
+        if(typeof gamepadRumble === 'function') gamepadRumble(p.idx, .3, .5, 140);
+        break;
+      }
+    }
+  }
+}
+function circleHitsBox(c, b){
+  const nx = Math.max(b.x, Math.min(c.x, b.x+b.w));
+  const ny = Math.max(b.y, Math.min(c.y, b.y+b.h));
+  const dx = c.x-nx, dy = c.y-ny;
+  return dx*dx + dy*dy < c.r*c.r;
+}
+
+/* ---- camera, particles, floating text ---------------------------------- */
+function updateCamera(){
+  let sum = 0, n = 0;
+  for(const p of players){ sum += p.x + p.w/2; n++; }
+  const target = Math.max(0, Math.min(worldW - W, (n ? sum/n : 0) - W*0.42));
+  camX += (target - camX) * 0.12;
+}
+function puff(x,y,color,n){
+  for(let i=0;i<n;i++)
+    parts.push({x, y, vx:rnd(-3,3), vy:rnd(-4,1.5), life:rnd(18,34), color, r:rnd(2,4.5)});
+}
+function floatText(x,y,text,color){ floats.push({x,y,text,color,life:70}); }
+function updateParticles(){
+  for(let i=parts.length-1;i>=0;i--){
+    const q = parts[i];
+    q.x += q.vx; q.y += q.vy; q.vy += 0.24; q.life--;
+    if(q.life <= 0) parts.splice(i,1);
+  }
+  for(let i=floats.length-1;i>=0;i--){
+    const f = floats[i]; f.y -= 0.75; f.life--;
+    if(f.life <= 0) floats.splice(i,1);
+  }
+}
+
+/* =========================================================================
+   DRAWING
+   ========================================================================= */
+function rrect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+
+function drawSky(){
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#5fb4f7'); g.addColorStop(.55,'#9fd8ff'); g.addColorStop(1,'#d9f2ff');
+  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+  // clouds (slow parallax)
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for(let i=0;i<9;i++){
+    const cx = ((i*430 - camX*0.22) % (W+400) + W+400) % (W+400) - 200;
+    const cy = 50 + (i%4)*46;
+    ctx.beginPath();
+    ctx.arc(cx,cy,26,0,7); ctx.arc(cx+26,cy+6,20,0,7); ctx.arc(cx-26,cy+8,17,0,7);
+    ctx.fill();
+  }
+  // far hills
+  ctx.fillStyle = '#6fbf8a';
+  for(let i=0;i<12;i++){
+    const hx = ((i*300 - camX*0.42) % (W+600) + W+600) % (W+600) - 300;
+    ctx.beginPath(); ctx.arc(hx, GROUND_Y+40, 150, Math.PI, 0); ctx.fill();
+  }
+  ctx.fillStyle = '#57a878';
+  for(let i=0;i<12;i++){
+    const hx = ((i*250 - camX*0.62) % (W+500) + W+500) % (W+500) - 250;
+    ctx.beginPath(); ctx.arc(hx+120, GROUND_Y+70, 110, Math.PI, 0); ctx.fill();
+  }
+}
+
+function drawPlatforms(){
+  for(const s of platforms){
+    if(s.x + s.w < camX - 40 || s.x > camX + W + 40) continue;
+    if(s.kind === 'ground'){
+      ctx.fillStyle = '#8a5a34'; ctx.fillRect(s.x, s.y, s.w, s.h);
+      ctx.fillStyle = '#4fbf5f'; ctx.fillRect(s.x, s.y, s.w, 14);
+      ctx.fillStyle = '#3ea24d'; ctx.fillRect(s.x, s.y+14, s.w, 5);
+      ctx.fillStyle = 'rgba(0,0,0,0.10)';
+      for(let d = Math.ceil(s.x/46)*46; d < s.x+s.w; d += 46) ctx.fillRect(d, s.y+30, 16, 8);
+    } else {
+      ctx.fillStyle = '#b0763f'; rrect(s.x, s.y, s.w, s.h, 6); ctx.fill();
+      ctx.fillStyle = '#5fd06f'; rrect(s.x, s.y, s.w, 8, 4); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(s.x+4, s.y+s.h-4, s.w-8, 3);
+    }
+  }
+}
+
+function drawCoin(x, y, r, ph){
+  const s = Math.abs(Math.cos((tick*0.06) + ph));      // spin
+  const bob = Math.sin(tick*0.07 + ph) * 4;
+  ctx.save(); ctx.translate(x, y+bob); ctx.scale(Math.max(0.18, s), 1);
+  ctx.fillStyle = '#ffd24a'; ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fill();
+  ctx.strokeStyle = '#c98b12'; ctx.lineWidth = 2.5; ctx.stroke();
+  ctx.fillStyle = '#fff2ad'; ctx.beginPath(); ctx.arc(-r*0.25,-r*0.25,r*0.28,0,7); ctx.fill();
+  ctx.restore();
+}
+
+function drawClock(x, y, r, ph){
+  const bob = Math.sin(tick*0.05 + ph) * 5;
+  const glow = 0.5 + 0.5*Math.sin(tick*0.11 + ph);
+  ctx.save(); ctx.translate(x, y+bob);
+  ctx.fillStyle = 'rgba(159,232,255,' + (0.16 + glow*0.22) + ')';
+  ctx.beginPath(); ctx.arc(0,0,r+11+glow*3,0,7); ctx.fill();
+  ctx.fillStyle = '#e8f8ff'; ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fill();
+  ctx.strokeStyle = '#2c86c9'; ctx.lineWidth = 4; ctx.stroke();
+  ctx.strokeStyle = '#2c86c9'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,-r*0.62); ctx.stroke();
+  const a = tick*0.05;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*r*0.48, Math.sin(a)*r*0.48); ctx.stroke();
+  ctx.fillStyle = '#2c86c9'; ctx.beginPath(); ctx.arc(0,0,2.6,0,7); ctx.fill();
+  ctx.fillStyle = '#2c86c9'; ctx.fillRect(-5,-r-6,10,4);       // little bell knob
+  ctx.restore();
+}
+
+function drawMonster(m){
+  if(m.dead) return;
+  const x = m.x + m.w/2, y = m.y + m.h;
+  const squash = m.onGround ? 1 + Math.sin(m.wob)*0.05 : 0.9;
+  const biting = m.bite > 0;
+  ctx.save(); ctx.translate(x, y);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(0, 3, m.w*0.5, 5, 0, 0, 7); ctx.fill();
+  ctx.scale(1/squash, squash);
+  const body = m.type === 'hopper' ? '#b06cff' : '#7a3fd6';
+  ctx.fillStyle = biting ? '#ff5d5d' : body;
+  ctx.beginPath();
+  ctx.moveTo(-m.w/2, 0);
+  ctx.quadraticCurveTo(-m.w/2, -m.h*1.25, 0, -m.h*1.25);
+  ctx.quadraticCurveTo(m.w/2, -m.h*1.25, m.w/2, 0);
+  ctx.closePath(); ctx.fill();
+  // feet
+  ctx.fillStyle = '#4a2088';
+  ctx.fillRect(-m.w/2+2, -4, 9, 5); ctx.fillRect(m.w/2-11, -4, 9, 5);
+  // mouth + teeth
+  const mw = biting ? 15 : 10, mh = biting ? 11 : 5;
+  ctx.fillStyle = '#2a0f4d';
+  rrect(-mw/2, -mh - 6, mw, mh, 3); ctx.fill();
+  ctx.fillStyle = '#fff';
+  for(let i=0;i<3;i++) ctx.fillRect(-mw/2+2 + i*(mw-4)/3, -mh-6, 3, 3.4);
+  if(biting) for(let i=0;i<3;i++) ctx.fillRect(-mw/2+2 + i*(mw-4)/3, -7.6, 3, 3.4);
+  // eyes
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(-7, -m.h*0.9, 5.4, 0, 7); ctx.arc(7, -m.h*0.9, 5.4, 0, 7); ctx.fill();
+  const look = Math.sign(m.vx) * 1.8;
+  ctx.fillStyle = '#180a2e';
+  ctx.beginPath(); ctx.arc(-7+look, -m.h*0.9, 2.6, 0, 7); ctx.arc(7+look, -m.h*0.9, 2.6, 0, 7); ctx.fill();
+  // horns
+  ctx.fillStyle = body;
+  ctx.beginPath(); ctx.moveTo(-10,-m.h*1.2); ctx.lineTo(-14,-m.h*1.6); ctx.lineTo(-5,-m.h*1.25); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(10,-m.h*1.2);  ctx.lineTo(14,-m.h*1.6);  ctx.lineTo(5,-m.h*1.25);  ctx.fill();
+  ctx.restore();
+}
+
+function drawPlayer(p){
+  if(p.inv > 0 && Math.floor(tick/4) % 2 === 0) return;     // blink while invincible
+  const x = p.x + p.w/2, y = p.y + p.h;
+  const moving = Math.abs(p.vx) > 0.4 && p.onGround;
+  const step = moving ? Math.sin(p.run) : 0;
+  ctx.save(); ctx.translate(x, y); ctx.scale(p.face, 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(0, 2, 13, 4.5, 0, 0, 7); ctx.fill();
+  // legs
+  ctx.strokeStyle = '#2b3555'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  const swing = p.onGround ? step*6 : -4;
+  ctx.beginPath(); ctx.moveTo(-3,-11); ctx.lineTo(-3+swing, -1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(3,-11);  ctx.lineTo(3-swing, -1);  ctx.stroke();
+  // body
+  ctx.fillStyle = p.color; rrect(-9, -25, 18, 15, 5); ctx.fill();
+  // arms
+  ctx.strokeStyle = p.color; ctx.lineWidth = 4.5;
+  const arm = p.onGround ? -step*7 : -9;
+  ctx.beginPath(); ctx.moveTo(-7,-22); ctx.lineTo(-11, -16+arm*0.5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(7,-22);  ctx.lineTo(11, -16-arm*0.5);  ctx.stroke();
+  // head
+  ctx.fillStyle = '#ffd9b8'; ctx.beginPath(); ctx.arc(0,-33,9.5,0,7); ctx.fill();
+  // hair + ponytail
+  ctx.fillStyle = p.hair;
+  ctx.beginPath(); ctx.arc(0,-34.5,9.8, Math.PI*1.05, Math.PI*2.05); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(-11,-32, 4.5, 8, 0.4, 0, 7); ctx.fill();
+  // face
+  ctx.fillStyle = '#22283f';
+  ctx.beginPath(); ctx.arc(3.5,-33.5,1.7,0,7); ctx.arc(-2,-33.5,1.7,0,7); ctx.fill();
+  ctx.strokeStyle = '#c96a86'; ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.arc(1,-30,3, 0.15, Math.PI-0.15); ctx.stroke();
+  ctx.restore();
+}
+
+function drawFlag(){
+  if(!flag) return;
+  ctx.fillStyle = '#dfe6f5'; ctx.fillRect(flag.x, flag.y, flag.w, flag.h);
+  ctx.fillStyle = '#ffd24a'; ctx.beginPath(); ctx.arc(flag.x+flag.w/2, flag.y-4, 8, 0, 7); ctx.fill();
+  const wave = Math.sin(tick*0.09)*5;
+  ctx.fillStyle = '#ff5d8f';
+  ctx.beginPath();
+  ctx.moveTo(flag.x+flag.w, flag.y+8);
+  ctx.quadraticCurveTo(flag.x+flag.w+38, flag.y+18+wave, flag.x+flag.w+62, flag.y+10);
+  ctx.lineTo(flag.x+flag.w+62, flag.y+46);
+  ctx.quadraticCurveTo(flag.x+flag.w+38, flag.y+54+wave, flag.x+flag.w, flag.y+46);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawHUD(){
+  // time capsule
+  const low = timeLeft <= 10;
+  const t = Math.max(0, Math.ceil(timeLeft));
+  ctx.save();
+  ctx.fillStyle = low && Math.floor(tick/8)%2===0 ? 'rgba(190,30,30,.85)' : 'rgba(10,16,40,0.62)';
+  rrect(W/2-96, 10, 192, 48, 14); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 13px Trebuchet MS, sans-serif'; ctx.fillStyle = '#9fe8ff';
+  ctx.fillText('TIME', W/2, 26);
+  ctx.font = 'bold 30px Trebuchet MS, sans-serif'; ctx.fillStyle = low ? '#ffdcdc' : '#fff';
+  ctx.fillText(t, W/2, 52);
+  ctx.restore();
+
+  players.forEach((p, i) => {
+    const right = i === 1;
+    const bx = right ? W - 18 : 18;
+    ctx.textAlign = right ? 'right' : 'left';
+    ctx.font = 'bold 16px Trebuchet MS, sans-serif';
+    ctx.fillStyle = p.color;
+    ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 3;
+    ctx.strokeText(p.name, bx, 28); ctx.fillText(p.name, bx, 28);
+    ctx.font = 'bold 20px Trebuchet MS, sans-serif'; ctx.fillStyle = '#fff';
+    ctx.strokeText(p.score, bx, 50); ctx.fillText(p.score, bx, 50);
+    for(let h=0; h<MAX_HP; h++){
+      const hx = right ? bx - 14 - h*22 : bx + 6 + h*22;
+      drawHeart(hx, 66, h < p.hp);
+    }
+    ctx.font = 'bold 13px Trebuchet MS, sans-serif'; ctx.fillStyle = '#ffe680';
+    ctx.strokeText('🪙 ' + p.coinsGot + '   ⏰ ' + p.clocksGot, bx, 100);
+    ctx.fillText('🪙 ' + p.coinsGot + '   ⏰ ' + p.clocksGot, bx, 100);
+  });
+
+  // level + progress bar
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 13px Trebuchet MS, sans-serif'; ctx.fillStyle = 'rgba(255,255,255,.9)';
+  ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 3;
+  ctx.strokeText('LEVEL ' + level, W/2, 76); ctx.fillText('LEVEL ' + level, W/2, 76);
+  const lead = players.reduce((a,p)=> Math.max(a, p.x), 0);
+  ctx.fillStyle = 'rgba(10,16,40,0.45)'; rrect(W/2-120, 84, 240, 8, 4); ctx.fill();
+  ctx.fillStyle = '#ffd24a';
+  rrect(W/2-120, 84, Math.max(6, 240 * Math.min(1, lead/(worldW-200))), 8, 4); ctx.fill();
+  ctx.textAlign = 'left';
+}
+
+function drawHeart(x, y, full){
+  ctx.save(); ctx.translate(x, y); ctx.scale(0.62, 0.62);
+  ctx.beginPath();
+  ctx.moveTo(0, 10);
+  ctx.bezierCurveTo(-14, -2, -9, -14, 0, -6);
+  ctx.bezierCurveTo(9, -14, 14, -2, 0, 10);
+  ctx.closePath();
+  ctx.fillStyle = full ? '#ff4d6d' : 'rgba(0,0,0,0.3)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.restore();
+}
+
+function draw(){
+  ctx.setTransform(1,0,0,1,0,0);
+  drawSky();
+  ctx.save();
+  const sx = shake > 0.4 ? rnd(-shake, shake) : 0;
+  const sy = shake > 0.4 ? rnd(-shake, shake) : 0;
+  ctx.translate(-Math.round(camX) + sx, sy);
+
+  drawPlatforms();
+  drawFlag();
+  for(const c of coins)  if(!c.taken && c.x > camX-40 && c.x < camX+W+40) drawCoin(c.x, c.y, c.r, c.ph);
+  for(const k of clocks) if(!k.taken && k.x > camX-60 && k.x < camX+W+60) drawClock(k.x, k.y, k.r, k.ph);
+  for(const m of monsters) if(m.x > camX-60 && m.x < camX+W+60) drawMonster(m);
+  for(const p of players) drawPlayer(p);
+
+  for(const q of parts){
+    ctx.globalAlpha = Math.min(1, q.life/22);
+    ctx.fillStyle = q.color;
+    ctx.beginPath(); ctx.arc(q.x, q.y, q.r, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.font = 'bold 16px Trebuchet MS, sans-serif'; ctx.textAlign = 'center';
+  for(const f of floats){
+    ctx.globalAlpha = Math.min(1, f.life/30);
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillText(f.text, f.x+1, f.y+1);
+    ctx.fillStyle = f.color; ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  ctx.restore();
+
+  drawHUD();
+}
+
+/* =========================================================================
+   SCREENS
+   ========================================================================= */
+const scr = {
+  title: document.getElementById('scrTitle'),
+  level: document.getElementById('scrLevel'),
+  over:  document.getElementById('scrOver'),
+  pause: document.getElementById('scrPause')
+};
+function hideScreens(){ for(const k in scr) scr[k].classList.add('hidden'); }
+function show(k){ hideScreens(); scr[k].classList.remove('hidden'); }
+
+function showTitle(){ state = 'title'; show('title'); }
+function setPaused(on){
+  if(on && state === 'play'){ state = 'paused'; show('pause'); }
+  else if(!on && state === 'paused'){ state = 'play'; hideScreens(); }
+}
+function levelClear(){
+  if(state !== 'play') return;
+  state = 'level';
+  const bonus = Math.floor(timeLeft) * 5;
+  for(const p of players) p.score += bonus;
+  document.getElementById('lvlTitle').textContent = 'LEVEL ' + level + ' CLEAR!';
+  document.getElementById('lvlBody').innerHTML =
+    'Time bonus <b>+' + bonus + '</b> each<br>' +
+    players.map(p => p.name + ': <b>' + p.score + '</b> &nbsp;(' + p.coinsGot +
+                     ' coins, ' + p.clocksGot + ' clocks)').join('<br>');
+  show('level');
+}
+function gameOver(){
+  if(state !== 'play') return;
+  state = 'over';
+  const best = players.slice().sort((a,b)=> b.score - a.score);
+  document.getElementById('overBody').innerHTML =
+    'You reached <b>level ' + level + '</b><br>' +
+    best.map((p,i) => (players.length>1 && i===0 ? '👑 ' : '') + p.name +
+                      ': <b>' + p.score + '</b>').join('<br>') +
+    '<br><span style="font-size:.8em;color:#bcd4ff">Hit more sky clocks — each one is +' +
+    CLOCK_SEC + ' seconds.</span>';
+  show('over');
+}
+function selectPlayers(n){
+  numPlayers = n;
+  document.getElementById('btn1p').classList.toggle('sel', n===1);
+  document.getElementById('btn2p').classList.toggle('sel', n===2);
+}
+document.getElementById('btn1p').onclick   = ()=> startGame(1);
+document.getElementById('btn2p').onclick   = ()=> startGame(2);
+document.getElementById('btnNext').onclick = ()=> nextLevel();
+document.getElementById('btnAgain').onclick= ()=> showTitle();
+document.getElementById('btnResume').onclick=()=> setPaused(false);
+document.getElementById('btn1p').onmouseenter = ()=> selectPlayers(1);
+document.getElementById('btn2p').onmouseenter = ()=> selectPlayers(2);
+
+/* little icons on the title screen, drawn with the same art style */
+function drawIconInto(g, kind){
+  if(kind === 'coin'){
+    g.fillStyle = '#ffd24a'; g.beginPath(); g.arc(17,17,11,0,7); g.fill();
+    g.strokeStyle = '#c98b12'; g.lineWidth = 2.5; g.stroke();
+    g.fillStyle = '#fff2ad'; g.beginPath(); g.arc(13,13,3,0,7); g.fill();
+  } else if(kind === 'clock'){
+    g.fillStyle = '#e8f8ff'; g.beginPath(); g.arc(17,18,12,0,7); g.fill();
+    g.strokeStyle = '#2c86c9'; g.lineWidth = 3; g.stroke();
+    g.lineWidth = 2.6; g.lineCap = 'round';
+    g.beginPath(); g.moveTo(17,18); g.lineTo(17,11); g.stroke();
+    g.beginPath(); g.moveTo(17,18); g.lineTo(23,20); g.stroke();
+    g.fillStyle = '#2c86c9'; g.fillRect(13,3,8,3);
+  } else {
+    g.fillStyle = '#7a3fd6';
+    g.beginPath(); g.moveTo(3,30); g.quadraticCurveTo(3,4,17,4);
+    g.quadraticCurveTo(31,4,31,30); g.closePath(); g.fill();
+    g.fillStyle = '#2a0f4d'; g.fillRect(11,21,12,6);
+    g.fillStyle = '#fff';
+    g.fillRect(12,21,3,3); g.fillRect(16,21,3,3); g.fillRect(20,21,3,3);
+    g.beginPath(); g.arc(11,14,4.6,0,7); g.arc(23,14,4.6,0,7); g.fill();
+    g.fillStyle = '#180a2e';
+    g.beginPath(); g.arc(11,14,2.2,0,7); g.arc(23,14,2.2,0,7); g.fill();
+  }
+}
+function drawTitleIcons(){
+  document.querySelectorAll('canvas.ic').forEach(c => {
+    const g = c.getContext('2d');
+    g.clearRect(0,0,c.width,c.height);
+    drawIconInto(g, c.dataset.ic);
+  });
+}
+
+/* =========================================================================
+   MAIN LOOP — fixed 60Hz physics so the feel never depends on the display
+   ========================================================================= */
+let last = 0, acc = 0;
+const STEP = 1000/60;
+function frame(t){
+  if(!last) last = t;
+  let dt = t - last; last = t;
+  if(dt > 240) dt = 240;
+  if(state === 'play'){
+    acc += dt;
+    let guard = 0;
+    while(acc >= STEP && guard++ < 6){ if(state === 'play') update(); acc -= STEP; }
+  } else {
+    acc = 0; tick++;
+  }
+  if(players.length) draw();
+  else { ctx.setTransform(1,0,0,1,0,0); drawSky(); }
+  requestAnimationFrame(frame);
+}
+
+/* fit the canvas to the window without stretching it */
+function fit(){
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width  = Math.floor(W * s) + 'px';
+  cv.style.height = Math.floor(H * s) + 'px';
+}
+addEventListener('resize', fit);
+fit();
+drawTitleIcons();
+selectPlayers(1);
+requestAnimationFrame(frame);
+
+/* =========================================================================
+   Controller + on-screen touch pad (gamepad.js turns these into key events)
+   ========================================================================= */
+setupGamepad({
+  players: [
+    { left:'KeyA', right:'KeyD', up:'KeyW', down:'KeyS',
+      a:'KeyW', b:'KeyW', x:'KeyW', y:'KeyW', start:'Enter', back:'Escape' },
+    { left:'ArrowLeft', right:'ArrowRight', up:'ArrowUp', down:'ArrowDown',
+      a:'ArrowUp', b:'ArrowUp', x:'ArrowUp', y:'ArrowUp', start:'Enter', back:'Escape' }
+  ]
+});
+</script>
+</body>
+</html>

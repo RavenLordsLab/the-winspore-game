@@ -151,6 +151,8 @@ const MON=[
    pw:'King of monsters. Atomic breath beam.', sp:'ATOMIC BREATH', realm:'land'},
  {id:'sharkwhale', nm:'Shark-Whale', col:'#4c6c88', col2:'#2c4054', w:170,h:120,
    pw:'1 million lbs. Unstoppable body charge.', sp:'MEGA CHARGE', realm:'sea'},
+ {id:'godshark', nm:'Godzilla Shark-Whale', col:'#356156', col2:'#1e3c36', w:184,h:132,
+   pw:'Whale bulk, shark jaws, Godzilla spine. Atomic maw + lunge.', sp:'ATOMIC MAW', realm:'sea'},
  {id:'seasnake', nm:'Sea Serpent', col:'#5fae4a', col2:'#356b28', w:150,h:130,
    pw:'Spiked snake, walks land & swims. Coil crush.', sp:'SPIKE COIL', realm:'land'},
  {id:'hugedog', nm:'Blood Hound', col:'#7a2222', col2:'#4a1010', w:130,h:130,
@@ -573,6 +575,66 @@ function drawMon(c, m, x, y, scale, face, t, state){
      c.lineTo(tx+5,-Hh*0.05+bob); c.lineTo(tx+2,Hh*0.1+bob); c.fill(); }
    eye(W*0.3,-Hh*0.18,'#ffd24a',7);
    break; }
+  case 'godshark': {
+   // whale tail flukes (behind)
+   c.fillStyle=shade(c,m.col2,-10);
+   c.beginPath(); c.moveTo(-W*0.46,bob);
+   c.quadraticCurveTo(-W*0.72,-48+bob,-W*0.68,-32+bob);
+   c.quadraticCurveTo(-W*0.56,bob,-W*0.68,32+bob);
+   c.quadraticCurveTo(-W*0.72,48+bob,-W*0.46,bob); c.fill();
+   // shark pectoral fin (low, front)
+   c.fillStyle=shade(c,m.col2,-6);
+   c.beginPath(); c.moveTo(W*0.06,Hh*0.3+bob);
+   c.lineTo(W*0.36,Hh*0.6+bob); c.lineTo(W*0.22,Hh*0.26+bob); c.closePath(); c.fill();
+   // whale / shark body
+   c.beginPath();
+   c.moveTo(-W*0.5,bob); c.quadraticCurveTo(-W*0.2,-Hh*0.5,W*0.26,-Hh*0.32);
+   c.quadraticCurveTo(W*0.64,-Hh*0.02,W*0.32,Hh*0.42);
+   c.quadraticCurveTo(-W*0.2,Hh*0.5,-W*0.5,bob); c.closePath(); gfill(m.col);
+   // pale shark belly
+   c.fillStyle='rgba(230,240,235,.22)';
+   c.beginPath(); c.ellipse(W*0.02,Hh*0.3+bob,W*0.34,Hh*0.14,0,0,7); c.fill();
+   // gills
+   c.strokeStyle='rgba(0,0,0,.3)'; c.lineWidth=2;
+   for(let i=0;i<3;i++){ c.beginPath();
+     c.moveTo(W*0.02+i*11,-Hh*0.1+bob);
+     c.quadraticCurveTo(W*0.05+i*11,bob,W*0.02+i*11,Hh*0.14+bob); c.stroke(); }
+   // Godzilla dorsal plates arching over the spine
+   c.fillStyle=shade(c,m.col2,22);
+   c.strokeStyle='rgba(0,0,0,.4)'; c.lineWidth=1.5;
+   for(let i=0;i<7;i++){ const u=i/6;
+     const px=-W*0.34 + u*W*0.6;
+     const py=-Hh*0.26 - Math.sin(u*Math.PI)*Hh*0.14 + bob;
+     const ph=16+Math.sin(u*Math.PI)*18;
+     c.beginPath(); c.moveTo(px-10,py+10);
+     c.lineTo(px,py-ph); c.lineTo(px+10,py+10); c.closePath(); c.fill(); c.stroke(); }
+   // big shark dorsal fin
+   c.fillStyle=shade(c,m.col,-16);
+   c.beginPath(); c.moveTo(-W*0.02,-Hh*0.34+bob);
+   c.lineTo(W*0.05,-Hh*0.82+bob); c.lineTo(W*0.16,-Hh*0.34+bob); c.closePath();
+   c.fill(); c.strokeStyle='rgba(0,0,0,.35)'; c.lineWidth=2; c.stroke();
+   // shark jaw with rows of teeth
+   c.strokeStyle='rgba(0,0,0,.5)'; c.lineWidth=4;
+   c.beginPath(); c.moveTo(W*0.02,Hh*0.06+bob); c.lineTo(W*0.44,Hh*0.02+bob); c.stroke();
+   c.fillStyle='#fff';
+   for(let i=0;i<8;i++){ const tx=W*0.06+i*((W*0.36)/8);
+     c.beginPath(); c.moveTo(tx,Hh*0.05+bob); c.lineTo(tx+5,Hh*0.05+bob);
+     c.lineTo(tx+2,Hh*0.17+bob); c.closePath(); c.fill(); }
+   for(let i=0;i<7;i++){ const tx=W*0.09+i*((W*0.3)/7);
+     c.beginPath(); c.moveTo(tx,Hh*0.06+bob); c.lineTo(tx+5,Hh*0.06+bob);
+     c.lineTo(tx+2,-Hh*0.02+bob); c.closePath(); c.fill(); }
+   // glowing atomic eye
+   eye(W*0.3,-Hh*0.16,'#7dff5a',9);
+   // atomic breath beam
+   if(atk){
+     const bg=c.createLinearGradient(W*0.4,0,W*1.9,0);
+     bg.addColorStop(0,'#fff'); bg.addColorStop(.3,'#9bff6a');
+     bg.addColorStop(1,'rgba(150,255,120,0)');
+     c.fillStyle=bg; c.shadowColor='#9bff6a'; c.shadowBlur=30;
+     c.beginPath(); c.moveTo(W*0.4,Hh*0.02+bob);
+     c.lineTo(W*1.9,-Hh*0.2+bob); c.lineTo(W*1.9,Hh*0.24+bob);
+     c.lineTo(W*0.4,Hh*0.14+bob); c.fill(); c.shadowBlur=0; }
+   break; }
   default: body();
  }
  // attack flash
@@ -915,6 +977,10 @@ function doSpecial(f,o){
  if(id==='skydragon'){ f.guard=120; }
  else if(id==='camo'){ f.cloak=90; toast(f.m.nm+' vanishes...'); }
  else if(id==='possum'){ f.fake=90; f.guard=90; toast(f.m.nm+' plays dead!'); }
+ else if(id==='godshark'){ // atomic maw beam + lunge
+   f.vx=f.face*16;
+   if(Math.abs(o.y-f.y)<150 && (o.x-f.x)*f.face>0){ hit(o,28,f.face*16); }
+   screenShake(); }
  else if(id==='godzilla'||id==='vamp'||id==='prickly'){ // beam
    if(Math.abs(o.y-f.y)<140 && (o.x-f.x)*f.face>0){ hit(o,26,f.face*14); }
    screenShake(); }
